@@ -82,6 +82,7 @@ inline std::uint32_t UDefenseComponent_StaticClass = 0;
 inline std::uint32_t UEngine_GetWorldFromContextObject = 0;
 inline std::uint32_t UFightingMovementComponent_SetSpeedState = 0;
 inline std::uint32_t UGameEngine_Tick = 0;
+inline std::uint32_t UWorld_Tick = 0;
 inline std::uint32_t UGameplayStatics_GetAllActorsOfClass = 0;
 inline std::uint32_t UGameplayStatics_GetPlayerCharacter = 0;
 inline std::uint32_t UGameplayStatics_OpenLevel = 0;
