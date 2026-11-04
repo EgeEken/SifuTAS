@@ -1,0 +1,7 @@
+; SifuTAS testing is single-player only.
+; If installing, copy to Sifu's Binaries\Win64 directory as SifuCoop.ini.
+[net]
+mode=off
+
+[coop]
+in_game_overlay=1
