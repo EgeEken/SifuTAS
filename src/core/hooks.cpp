@@ -2,7 +2,10 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 
 #include "../../third_party/minhook/include/MinHook.h"
 
@@ -27,23 +30,42 @@ namespace ue = sifucoop::ue;
 using TickFn = void(__fastcall*)(void*, float, bool);
 using WorldTickFn = void(__fastcall*)(void*, int, float);
 using EffectiveTimeDilationFn = float(__fastcall*)(void*);
+using SetTimeDilationFn = float(__fastcall*)(void*, float);
+using SetDemoPlayTimeDilationFn = void(__fastcall*)(void*, float);
 
 constexpr float kSpeedPresets[] = {0.5f, 0.2f, 0.1f};
 constexpr float kFrameStepSeconds = 1.f / 60.f;
 
-float g_tas_multiplier = 1.f;
-bool g_paused = false;
+std::uintptr_t g_base = 0;
+std::atomic<float> g_tas_multiplier{1.f};
+std::atomic<bool> g_paused{false};
 WorldTickFn g_original_world_tick = nullptr;
 EffectiveTimeDilationFn g_original_effective_time_dilation = nullptr;
+SetTimeDilationFn g_original_set_time_dilation = nullptr;
+SetDemoPlayTimeDilationFn g_original_set_demo_play_time_dilation = nullptr;
 void* g_world_tick_target = nullptr;
 void* g_effective_time_dilation_target = nullptr;
-bool g_step_requested = false;
-bool g_step_in_progress = false;
+void* g_set_time_dilation_target = nullptr;
+void* g_set_demo_play_time_dilation_target = nullptr;
+std::atomic<bool> g_step_requested{false};
+std::atomic<bool> g_step_in_progress{false};
+std::atomic<float> g_last_world_tick_delta{0.f};
 unsigned long long g_steps = 0;
-float g_last_logged_game_scale = -1.f;
-float g_last_logged_tas_multiplier = -1.f;
-float g_last_logged_effective_scale = -1.f;
-ULONGLONG g_last_time_scale_log_ms = 0;
+ULONGLONG g_last_diagnostic_sample_ms = 0;
+std::atomic<ULONGLONG> g_last_setter_log_ms{0};
+std::atomic<float> g_last_demo_setter_value{-1.f};
+
+constexpr ULONGLONG kDiagnosticSampleIntervalMs = 1000;
+constexpr ULONGLONG kSetterLogIntervalMs = 250;
+
+struct WorldContextFloat {
+    ue::UObject* WorldContextObject = nullptr;
+    float ReturnValue = 0.f;
+};
+
+struct WorldSettingsOut {
+    ue::UObject* ReturnValue = nullptr;
+};
 
 bool GameFocused() {
     HWND foreground = GetForegroundWindow();
@@ -63,30 +85,181 @@ bool Pressed(int key, bool focused) {
     return focused && pressed;
 }
 
-void LogTimeScale(float game_scale, float tas_multiplier, float effective_scale) {
-    const ULONGLONG now = GetTickCount64();
-    const bool changed =
-        std::fabs(game_scale - g_last_logged_game_scale) > 0.01f ||
-        std::fabs(tas_multiplier - g_last_logged_tas_multiplier) > 0.001f ||
-        std::fabs(effective_scale - g_last_logged_effective_scale) > 0.01f;
-    if (!changed || (g_last_time_scale_log_ms && now - g_last_time_scale_log_ms < 250))
-        return;
+const char* PresetName(float multiplier) {
+    if (std::fabs(multiplier - 0.5f) < 0.001f) return "0.5x";
+    if (std::fabs(multiplier - 0.2f) < 0.001f) return "0.2x";
+    if (std::fabs(multiplier - 0.1f) < 0.001f) return "0.1x";
+    return "1.0x";
+}
 
-    SC_LOG("tas: time scale game=%.3f multiplier=%.1f effective=%.3f", game_scale,
-           tas_multiplier, effective_scale);
-    g_last_logged_game_scale = game_scale;
-    g_last_logged_tas_multiplier = tas_multiplier;
-    g_last_logged_effective_scale = effective_scale;
-    g_last_time_scale_log_ms = now;
+bool SetterLogWindowOpen() {
+    const ULONGLONG now = GetTickCount64();
+    ULONGLONG last = g_last_setter_log_ms.load(std::memory_order_relaxed);
+    while (now - last >= kSetterLogIntervalMs) {
+        if (g_last_setter_log_ms.compare_exchange_weak(last, now,
+                                                       std::memory_order_relaxed))
+            return true;
+    }
+    return false;
+}
+
+bool ReadFloatAt(const void* object, std::uint32_t offset, float* out) {
+    if (!object || !offset || !out) return false;
+    const auto* address = static_cast<const std::uint8_t*>(object) + offset;
+    if (!ue::RangeReadable(address, sizeof(*out))) return false;
+    std::memcpy(out, address, sizeof(*out));
+    return std::isfinite(*out);
 }
 
 float __fastcall EffectiveTimeDilationHook(void* self) {
     const float game_scale = g_original_effective_time_dilation(self);
-    const float tas_multiplier = g_step_in_progress ? 1.f : g_tas_multiplier;
-    const float effective_scale = game_scale * tas_multiplier;
-    if (!g_step_in_progress)
-        LogTimeScale(game_scale, tas_multiplier, effective_scale);
-    return effective_scale;
+    const float multiplier = g_step_in_progress.load(std::memory_order_relaxed)
+                                 ? 1.f
+                                 : g_tas_multiplier.load(std::memory_order_relaxed);
+    return game_scale * multiplier;
+}
+
+float __fastcall SetTimeDilationHook(void* self, float requested) {
+    float before = 0.f;
+    ReadFloatAt(self, offsets::M_AWorldSettings_TimeDilation, &before);
+    const float result = g_original_set_time_dilation(self, requested);
+    float after = 0.f;
+    if (ReadFloatAt(self, offsets::M_AWorldSettings_TimeDilation, &after) &&
+        std::fabs(after - before) > 0.001f && SetterLogWindowOpen()) {
+        const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
+        const std::uint32_t caller_rva = caller >= g_base
+                                             ? static_cast<std::uint32_t>(caller - g_base)
+                                             : 0;
+        SC_LOG("tas: setter=TimeDilation preset=%s requested=%.4f stored=%.4f->%.4f caller_rva=%08X",
+               PresetName(g_tas_multiplier.load(std::memory_order_relaxed)), requested,
+               before, after, caller_rva);
+    }
+    return result;
+}
+
+void __fastcall SetDemoPlayTimeDilationHook(void* self, float requested) {
+    g_original_set_demo_play_time_dilation(self, requested);
+    const float previous = g_last_demo_setter_value.exchange(requested,
+                                                              std::memory_order_relaxed);
+    if (std::fabs(previous - requested) <= 0.001f || !SetterLogWindowOpen()) return;
+    const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
+    const std::uint32_t caller_rva = caller >= g_base
+                                         ? static_cast<std::uint32_t>(caller - g_base)
+                                         : 0;
+    SC_LOG("tas: setter=DemoPlayTimeDilation preset=%s requested=%.4f caller_rva=%08X",
+           PresetName(g_tas_multiplier.load(std::memory_order_relaxed)), requested,
+           caller_rva);
+}
+
+void SampleTimeDilation() {
+    const ULONGLONG now = GetTickCount64();
+    if (g_last_diagnostic_sample_ms &&
+        now - g_last_diagnostic_sample_ms < kDiagnosticSampleIntervalMs)
+        return;
+    g_last_diagnostic_sample_ms = now;
+
+    ue::UObject* world = ue::GetWorld();
+    ue::UObject* player = world ? ue::GetPlayerCharacter(world, 0) : nullptr;
+    if (!world || !player) return;
+
+    WorldSettingsOut settings_out = {};
+    ue::CallFunction(world, L"K2_GetWorldSettings", &settings_out);
+    ue::UObject* settings = settings_out.ReturnValue;
+
+    float time_dilation = -1.f;
+    float matinee_dilation = -1.f;
+    float demo_dilation = -1.f;
+    float original_effective = -1.f;
+    float player_dilation = -1.f;
+    const float multiplier = g_tas_multiplier.load(std::memory_order_relaxed);
+    ReadFloatAt(settings, offsets::M_AWorldSettings_TimeDilation, &time_dilation);
+    ReadFloatAt(settings, offsets::M_AWorldSettings_MatineeTimeDilation,
+                 &matinee_dilation);
+    ReadFloatAt(settings, offsets::M_AWorldSettings_DemoPlayTimeDilation,
+                 &demo_dilation);
+    if (settings && g_original_effective_time_dilation)
+        original_effective = g_original_effective_time_dilation(settings);
+    ReadFloatAt(player, offsets::M_AActor_CustomTimeDilation, &player_dilation);
+
+    float enemy_dilation = -1.f;
+    std::uint32_t enemy_hash = 0;
+    float closest_distance = INFINITY;
+    game::EnemyRow enemies[64] = {};
+    const int enemy_count = game::GetEnemyRows(enemies, 64);
+    for (int i = 0; i < enemy_count; ++i) {
+        if (!enemies[i].active || enemies[i].health <= 0.5f ||
+            enemies[i].distance < 0.f || enemies[i].distance >= closest_distance)
+            continue;
+        ue::UObject* enemy = game::FindEnemyByHash(enemies[i].hash);
+        if (!enemy) continue;
+        closest_distance = enemies[i].distance;
+        enemy_hash = enemies[i].hash;
+        enemy_dilation = -1.f;
+        ReadFloatAt(enemy, offsets::M_AActor_CustomTimeDilation, &enemy_dilation);
+    }
+
+    static ue::UObject* gameplay_statics = nullptr;
+    if (!gameplay_statics)
+        gameplay_statics = ue::FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");
+    float world_time = -1.f;
+    float real_time = -1.f;
+    bool have_world_time = false;
+    bool have_real_time = false;
+    if (gameplay_statics) {
+        WorldContextFloat params = {world, 0.f};
+        if (ue::CallFunction(gameplay_statics, L"GetTimeSeconds", &params)) {
+            world_time = params.ReturnValue;
+            have_world_time = true;
+        }
+        params.ReturnValue = 0.f;
+        if (ue::CallFunction(gameplay_statics, L"GetRealTimeSeconds", &params)) {
+            real_time = params.ReturnValue;
+            have_real_time = true;
+        }
+    }
+
+    static bool have_previous = false;
+    static float previous_world_time = 0.f;
+    static float previous_real_time = 0.f;
+    static ULONGLONG previous_wall_ms = 0;
+    float world_delta = -1.f;
+    float real_delta = -1.f;
+    float wall_delta = -1.f;
+    if (have_previous && have_world_time && have_real_time) {
+        world_delta = world_time - previous_world_time;
+        real_delta = real_time - previous_real_time;
+        wall_delta = static_cast<float>(now - previous_wall_ms) / 1000.f;
+        if (world_delta < 0.f || real_delta < 0.f)
+            world_delta = real_delta = wall_delta = -1.f;
+    }
+    if (have_world_time && have_real_time) {
+        previous_world_time = world_time;
+        previous_real_time = real_time;
+        previous_wall_ms = now;
+        have_previous = true;
+    }
+
+    const float world_per_real = world_delta >= 0.f && real_delta > 0.001f
+                                     ? world_delta / real_delta : -1.f;
+    const float world_per_wall = world_delta >= 0.f && wall_delta > 0.001f
+                                     ? world_delta / wall_delta : -1.f;
+    const float component_product = time_dilation >= 0.f && matinee_dilation >= 0.f &&
+                                            demo_dilation >= 0.f
+                                        ? time_dilation * matinee_dilation * demo_dilation
+                                        : -1.f;
+    const float effective = original_effective >= 0.f
+                                ? original_effective * multiplier : -1.f;
+    SYSTEMTIME timestamp = {};
+    GetLocalTime(&timestamp);
+    SC_LOG("tas: diag timestamp=%04u-%02u-%02uT%02u:%02u:%02u.%03u preset=%s paused=%u world_tick_dt=%.5f world_time=%.3f real_time=%.3f dt_world=%.4f dt_real=%.4f dt_wall=%.4f world_per_real=%.3f world_per_wall=%.3f dilation={time=%.4f matinee=%.4f demo=%.4f product=%.4f original=%.4f multiplier=%.1f effective=%.4f} actor={player=%.3f enemy_hash=%08X enemy=%.3f}",
+           timestamp.wYear, timestamp.wMonth, timestamp.wDay, timestamp.wHour,
+           timestamp.wMinute, timestamp.wSecond, timestamp.wMilliseconds,
+           PresetName(multiplier), g_paused.load(std::memory_order_relaxed) ? 1u : 0u,
+           g_last_world_tick_delta.load(std::memory_order_relaxed), world_time, real_time,
+           world_delta, real_delta, wall_delta, world_per_real, world_per_wall,
+           time_dilation, matinee_dilation, demo_dilation, component_product,
+           original_effective, multiplier, effective, player_dilation, enemy_hash,
+           enemy_dilation);
 }
 
 void PollTASKeys() {
@@ -98,42 +271,49 @@ void PollTASKeys() {
     const bool tenth = Pressed(VK_F5, focused);
 
     if (half) {
-        g_tas_multiplier = std::fabs(g_tas_multiplier - kSpeedPresets[0]) < 0.001f
-                               ? 1.f
-                               : kSpeedPresets[0];
-        SC_LOG("tas: multiplier selected %.1f", g_tas_multiplier);
+        const float current = g_tas_multiplier.load(std::memory_order_relaxed);
+        const float next = std::fabs(current - kSpeedPresets[0]) < 0.001f
+                               ? 1.f : kSpeedPresets[0];
+        g_tas_multiplier.store(next, std::memory_order_relaxed);
+        SC_LOG("tas: multiplier selected %s", PresetName(next));
     } else if (fifth) {
-        g_tas_multiplier = std::fabs(g_tas_multiplier - kSpeedPresets[1]) < 0.001f
-                               ? 1.f
-                               : kSpeedPresets[1];
-        SC_LOG("tas: multiplier selected %.1f", g_tas_multiplier);
+        const float current = g_tas_multiplier.load(std::memory_order_relaxed);
+        const float next = std::fabs(current - kSpeedPresets[1]) < 0.001f
+                               ? 1.f : kSpeedPresets[1];
+        g_tas_multiplier.store(next, std::memory_order_relaxed);
+        SC_LOG("tas: multiplier selected %s", PresetName(next));
     } else if (tenth) {
-        g_tas_multiplier = std::fabs(g_tas_multiplier - kSpeedPresets[2]) < 0.001f
-                               ? 1.f
-                               : kSpeedPresets[2];
-        SC_LOG("tas: multiplier selected %.1f", g_tas_multiplier);
+        const float current = g_tas_multiplier.load(std::memory_order_relaxed);
+        const float next = std::fabs(current - kSpeedPresets[2]) < 0.001f
+                               ? 1.f : kSpeedPresets[2];
+        g_tas_multiplier.store(next, std::memory_order_relaxed);
+        SC_LOG("tas: multiplier selected %s", PresetName(next));
     }
 
     if (pause && g_original_world_tick) {
-        g_paused = !g_paused;
-        g_step_requested = false;
-        SC_LOG("tas: %s", g_paused ? "paused" : "resumed");
+        const bool paused = !g_paused.load(std::memory_order_relaxed);
+        g_paused.store(paused, std::memory_order_relaxed);
+        g_step_requested.store(false, std::memory_order_relaxed);
+        SC_LOG("tas: %s", paused ? "paused" : "resumed");
     }
 
-    if (step && g_paused && g_original_world_tick) g_step_requested = true;
+    if (step && g_paused.load(std::memory_order_relaxed) && g_original_world_tick)
+        g_step_requested.store(true, std::memory_order_relaxed);
 }
 
 void __fastcall WorldTickHook(void* self, int tick_type, float delta_seconds) {
-    if (!g_paused || self != ue::GetWorld()) {
+    const bool current_world = self == ue::GetWorld();
+    if (current_world)
+        g_last_world_tick_delta.store(delta_seconds, std::memory_order_relaxed);
+    if (!g_paused.load(std::memory_order_relaxed) || !current_world) {
         g_original_world_tick(self, tick_type, delta_seconds);
         return;
     }
 
-    if (!g_step_requested) return;
-    g_step_requested = false;
-    g_step_in_progress = true;
+    if (!g_step_requested.exchange(false, std::memory_order_relaxed)) return;
+    g_step_in_progress.store(true, std::memory_order_relaxed);
     g_original_world_tick(self, tick_type, kFrameStepSeconds);
-    g_step_in_progress = false;
+    g_step_in_progress.store(false, std::memory_order_relaxed);
     ++g_steps;
     SC_LOG("tas: step %llu", g_steps);
 }
@@ -143,7 +323,6 @@ TickFn g_original_tick = nullptr;
 void** g_vtable = nullptr;
 int g_tick_slot = -1;
 
-std::uintptr_t g_base = 0;
 unsigned long long g_frames = 0;
 
 void OnFrame() {
@@ -158,6 +337,7 @@ void OnFrame() {
     sifucoop::game::TickEnemies();
     sifucoop::game::TickPuppet();
     sifucoop::game::TickSelfTest();
+    SampleTimeDilation();
 
     // After everything has moved this frame, so the digest describes the state
     // the player actually saw.
@@ -245,7 +425,9 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
         SC_LOG("tas: GetEffectiveTimeDilation symbol missing; speed presets unavailable");
     if (!offsets::UWorld_Tick)
         SC_LOG("tas: UWorld::Tick symbol missing; pause and frame step unavailable");
-    if (!offsets::AWorldSettings_GetEffectiveTimeDilation && !offsets::UWorld_Tick)
+    if (!offsets::AWorldSettings_GetEffectiveTimeDilation && !offsets::UWorld_Tick &&
+        !offsets::AWorldSettings_SetTimeDilation &&
+        !offsets::UReplaySystem_SetDemoPlayTimeDilation)
         return true;
 
     const MH_STATUS init = MH_Initialize();
@@ -273,6 +455,43 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
         }
     }
 
+    if (offsets::AWorldSettings_SetTimeDilation) {
+        g_set_time_dilation_target =
+            reinterpret_cast<void*>(base + offsets::AWorldSettings_SetTimeDilation);
+        MH_STATUS status = MH_CreateHook(
+            g_set_time_dilation_target, reinterpret_cast<void*>(&SetTimeDilationHook),
+            reinterpret_cast<void**>(&g_original_set_time_dilation));
+        if (status == MH_OK) status = MH_EnableHook(g_set_time_dilation_target);
+        if (status != MH_OK) {
+            SC_LOG("tas: SetTimeDilation diagnostic hook failed (%d)",
+                   static_cast<int>(status));
+            MH_RemoveHook(g_set_time_dilation_target);
+            g_original_set_time_dilation = nullptr;
+            g_set_time_dilation_target = nullptr;
+        } else {
+            SC_LOG("tas: SetTimeDilation diagnostic hook installed");
+        }
+    }
+
+    if (offsets::UReplaySystem_SetDemoPlayTimeDilation) {
+        g_set_demo_play_time_dilation_target =
+            reinterpret_cast<void*>(base + offsets::UReplaySystem_SetDemoPlayTimeDilation);
+        MH_STATUS status = MH_CreateHook(
+            g_set_demo_play_time_dilation_target,
+            reinterpret_cast<void*>(&SetDemoPlayTimeDilationHook),
+            reinterpret_cast<void**>(&g_original_set_demo_play_time_dilation));
+        if (status == MH_OK) status = MH_EnableHook(g_set_demo_play_time_dilation_target);
+        if (status != MH_OK) {
+            SC_LOG("tas: DemoPlayTimeDilation diagnostic hook failed (%d)",
+                   static_cast<int>(status));
+            MH_RemoveHook(g_set_demo_play_time_dilation_target);
+            g_original_set_demo_play_time_dilation = nullptr;
+            g_set_demo_play_time_dilation_target = nullptr;
+        } else {
+            SC_LOG("tas: DemoPlayTimeDilation diagnostic hook installed");
+        }
+    }
+
     if (offsets::UWorld_Tick) {
         g_world_tick_target = reinterpret_cast<void*>(base + offsets::UWorld_Tick);
         MH_STATUS status = MH_CreateHook(g_world_tick_target,
@@ -292,6 +511,18 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
 }
 
 void RemoveTickHook() {
+    if (g_set_demo_play_time_dilation_target) {
+        MH_DisableHook(g_set_demo_play_time_dilation_target);
+        MH_RemoveHook(g_set_demo_play_time_dilation_target);
+        g_set_demo_play_time_dilation_target = nullptr;
+        g_original_set_demo_play_time_dilation = nullptr;
+    }
+    if (g_set_time_dilation_target) {
+        MH_DisableHook(g_set_time_dilation_target);
+        MH_RemoveHook(g_set_time_dilation_target);
+        g_set_time_dilation_target = nullptr;
+        g_original_set_time_dilation = nullptr;
+    }
     if (g_effective_time_dilation_target) {
         MH_DisableHook(g_effective_time_dilation_target);
         MH_RemoveHook(g_effective_time_dilation_target);

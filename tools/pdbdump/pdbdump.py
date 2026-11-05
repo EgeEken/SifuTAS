@@ -61,6 +61,12 @@ WANTED = {
     "AWorldSettings_GetEffectiveTimeDilation": [
         "?GetEffectiveTimeDilation@AWorldSettings@@UEBAMXZ"
     ],
+    "AWorldSettings_SetTimeDilation": [
+        "?SetTimeDilation@AWorldSettings@@UEAAMM@Z"
+    ],
+    "UReplaySystem_SetDemoPlayTimeDilation": [
+        "?SetDemoPlayTimeDilation@UReplaySystem@@QEBAXM@Z"
+    ],
     "UEngine_GetWorldFromContextObject": ["?GetWorldFromContextObject@UEngine@@"],
     "GEngine": ["?GEngine@@"],
     "GWorld": ["?GWorld@@"],
@@ -318,6 +324,9 @@ WANTED_MEMBERS = {
 
 
     "M_AActor_CustomTimeDilation": ("AActor", "CustomTimeDilation"),
+    "M_AWorldSettings_TimeDilation": ("AWorldSettings", "TimeDilation"),
+    "M_AWorldSettings_MatineeTimeDilation": ("AWorldSettings", "MatineeTimeDilation"),
+    "M_AWorldSettings_DemoPlayTimeDilation": ("AWorldSettings", "DemoPlayTimeDilation"),
 }
 
 

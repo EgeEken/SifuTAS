@@ -2,6 +2,8 @@
 
 **Status:** the user reports F1–F5, pause, frame stepping and mouse behavior work in-game. Cinematic transitions appear preserved. Extended play showed gradual apparent acceleration (around 1.5×); cause remains under investigation.
 
+The current diagnostic build logs a `tas: diag` sample about once per second on the game thread. It includes the three stored world dilation fields, original and TAS-scaled effective values, player and nearest active enemy custom dilation, the latest current-world tick delta, world/real time deltas, and world-time-to-wall-time ratios. Native setter change records include caller RVAs and are rate-limited. Do not treat diagnostics as game-tested until this build has run in Sifu.
+
 ## Local build record
 
 - 2026-11-04: `build.ps1` completed for the Steam install using its local `Sifu-Win64-Shipping.pdb` and `-LocalBuildName steam`.
@@ -12,13 +14,14 @@
 - 2026-11-04: the first build was installed after approval. The revised build was compiled and installed after preserving the prior DLL as `build/dsound.pre-update.dll`.
 - 2026-11-04: the effective-time-dilation hook and F1–F5 presets built successfully against the same Steam fingerprint; installation was held for backup verification and approval.
 - 2026-11-05: after approval, the multiplicative-time-scale build replaced the prior DLL. Installed SHA-256: `ACD98E654B6ECCE2C64DE13734A48CE896900CE6678F66809595C5FB69E56523`. Prior installed DLL and earlier rollback copy are preserved in `build/`.
+- 2026-11-05: the diagnostic pass resolved the Steam PDB fields and setter RVAs, passed the build script's crypto vectors, and compiled a 1,228,288-byte DLL. It has not been deployed or tested in-game.
 
 ## Preconditions
 
 - Game installed and closed; Windows; legitimately owned PC copy.
 - Matching `Sifu-Win64-Shipping.exe` and `.pdb` available in game `Binaries\Win64` folder.
 - Python 3 and WinLibs UCRT x64 `g++` accessible in PowerShell.
-- Existing `dsound.dll` or conflicting mods **backed up and removed** before deployment. `SifuCoop.ini` has `[net] mode=off` or is absent (upstream defaults to off).
+- Existing `dsound.dll` and conflicting mods inspected; obtain approval before any replacement. `SifuCoop.ini` has `[net] mode=off` or is absent (upstream defaults to off).
 - Use a short solo training encounter, not a long gameplay save.
 
 ## Procedure
@@ -31,6 +34,7 @@
 6. Use a special attack that previously changed playback speed. Check that Sifu's native slow-motion transition remains smooth and is multiplied by the selected TAS preset.
 7. At each preset, press **F1** to pause, **F2** repeatedly to step, then **F1** to resume. Confirm the selected preset survives pausing and each step advances the same increment.
 8. Test pause and resume after loading a different room; ensure loading transitions cannot wedge the simulation. Re-select a speed preset to return to 1×.
+9. For acceleration diagnostics, run unpaused at 1× for a sustained baseline in the training room, with no speed hotkeys pressed. Compare `world_per_real`, `world_per_wall`, stored dilation components, and `product` versus `original`; retain logs before and after any apparent speed change.
 
 ## Logs
 
@@ -41,7 +45,9 @@ Diagnostic strings:
 - `tas: UWorld::Tick symbol missing`: offset unavailable; F1/F2 won't operate.
 - `tas: world tick hook failed`: MinHook installation failed.
 - `tas: effective time dilation hook failed`: MinHook installation failed.
-- `tas: time scale game=... multiplier=... effective=...`: sampled native scale, TAS multiplier and combined scale; logs are change-driven and rate-limited.
+- `tas: diag timestamp=...`: full one-second diagnostic sample; at a 1× baseline, `product`, `original`, and `effective` should match, and world-time ratios should be near 1.0 during unpaused play.
+- `tas: setter=TimeDilation ... caller_rva=...`: native base-dilation setter changed the stored value.
+- `tas: setter=DemoPlayTimeDilation ... caller_rva=...`: replay-system demo dilation setter received a changed value. Matinee dilation is sampled directly because no matching setter symbol was found in this PDB.
 - `tas: step N`: one hooked world-tick invocation occurred, not proof of a complete simulation step.
 
 Report: storefront, executable build fingerprint, exact build command, compiler errors (if any), log excerpt, key behavior, crash/hang details. Do not upload game executable, PDB or other proprietary data.

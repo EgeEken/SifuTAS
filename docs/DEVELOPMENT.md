@@ -15,14 +15,22 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Immediate milestones
 
-1. **Compile** on Windows against the locally installed game's matching PDB. Resolve symbol ambiguities or calling convention issues without guessing offsets.
+1. **Diagnose apparent acceleration** on Windows using game-thread samples of stored dilation components, setter caller RVAs, actor custom dilation, tick delta, and world-time progression relative to real time. First collect a sustained 1× baseline; do not clamp or reset values until the changing source is identified.
 2. **Validate slowdown** on a training encounter. Distinguish global time dilation from renderer/audio/UI clocks.
 3. **Validate pause and frame advance**: the engine continues rendering and accepts hotkeys, no catastrophic hangs, no drift/jump when resuming. Check whether input events are buffered during pause and whether multiple worlds tick.
 4. **Remove co-op runtime dependencies** once Phase 1 works. Keep the proxy, reflection, tick hooks, PDB tools, ImGui and logging; replace the co-op menu with TAS controls.
 5. **Capture and inject inputs** at the relevant controller/input processing boundary, preserving press/release edges and analog axes.
 6. **Recording/editing**: frame-indexed input timeline, replay from repeatable encounter starts, per-frame state checksum and divergence reporting.
-7. **Checkpoint/rewind**: prefer restarting and fast-forwarding deterministically initially; investigate actual state snapshots after confirming what engine state is serializable.
-8. **Savestates**: investigate Unreal gameplay, AI, animation, physics and RNG state. Avoid assuming an arbitrary process memory snapshot is safe.
+7. **Checkpoint v1**: in the training room, save the player and one enemy only from a paused, idle state. Track stable actor identity within the current world and capture root transform, velocity, health, structure/guard, actor time dilation, down state, movement mode, and current montage/time. Restore the same actors by validated pointers or stable gameplay ID, using engine setters for transform/vitals where possible; then resume their AI only after their restored baseline has been checked.
+8. **Active-fight savestates**: later reverse engineer behavior-tree/AI state, queued attacks and callbacks, montage/root-motion state, movement and physics, timers, and random streams. Do not treat actor transforms and vitals as a complete arbitrary-frame snapshot.
+
+## Checkpoint v1 strategy
+
+Use direct capture and restore of a quiet training-room encounter as the first prototype. Resetting combat systems before restore is riskier for v1: stopping behavior trees or clearing attack/defense components can dispatch callbacks, invalidate object references, or move actors into recovery states. Instead, require a capture/restore gate where player and enemy are alive, standing, not in an active attack/hit reaction montage, and have no pending order. Pause the world, capture both actors and the identified combat fields, restore transforms and movement before vitals and montage state, verify the result, then resume the enemy brain.
+
+Use a stable enemy identity based on its current-world object path plus class and spawn generation; invalidate the snapshot when the world changes or the actor is destroyed/replaced. A reset/re-spawn path can be evaluated if that identity fails after training-room reset.
+
+Likely v1 failures are stale actor references after reset, AI resuming with a queued attack, root motion overriding restored position, montage not restoring its linked animation state, health/structure callbacks firing out of order, and timers/callbacks from before the snapshot running after restore. On any identity or state validation failure, refuse the load and require a fresh capture. This prototype will retry a quiet setup; it will not restore an active fight.
 
 ## Known risks
 

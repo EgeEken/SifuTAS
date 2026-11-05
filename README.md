@@ -1,22 +1,24 @@
 # SifuTAS
 
-**Experimental Windows mod for Sifu — not a working release yet.**
+**Experimental Windows mod for Sifu — development build, not a release.**
 
 Goal: tool-assisted, choreographed combat footage with precise slowdown, frame stepping, and eventually input editing, replay, checkpoints and savestates. This is for creative gameplay videos, **not** verified competitive TAS speedrun files.
 
-The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** The current native implementation has **not been compiled or tested in Sifu**.
+The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** The TAS controls have been built and tested in-game by the user. The new diagnostic build is compiled but has not yet been installed or tested in-game.
 
 ## Current prototype
 
 | Key | Intended action | Status |
 | --- | --- | --- |
-| F1 | Pause/resume world simulation | Works in the previous build; new binding pending retest |
-| F2 | Step one UWorld::Tick at 1/60 s while paused | Works in the previous build; new binding pending retest |
-| F3 | Toggle 0.5× playback speed | Built; pending in-game test |
-| F4 | Toggle 0.2× playback speed | Built; pending in-game test |
-| F5 | Toggle 0.1× playback speed | Built; pending in-game test |
+| F1 | Pause/resume world simulation | User-tested working |
+| F2 | Step one UWorld::Tick at 1/60 s while paused | User-tested working |
+| F3 | Toggle 0.5× playback speed | User-tested working |
+| F4 | Toggle 0.2× playback speed | User-tested working |
+| F5 | Toggle 0.1× playback speed | User-tested working |
 
-Speed presets multiply Sifu's effective world time dilation. A frame step temporarily bypasses the TAS multiplier so it advances the same 1/60 s world tick at every selected preset.
+Mouse capture and camera sensitivity were also reported fixed. Speed presets multiply Sifu's effective world time dilation. A frame step temporarily bypasses the TAS multiplier so it advances the same 1/60 s world tick at every selected preset.
+
+**Unresolved:** the user observed gradual apparent acceleration during extended play, persisting after returning to 1×. The cause is unknown. The current diagnostic build samples stored world-dilation components, player and nearest active enemy dilation, world and real time progression, and setter changes. Its runtime behavior has not yet been tested.
 
 Frame stepping does **not** yet guarantee that input is sampled once, all subsystems are paused, or animation/physics are synchronized. It is not deterministic replay. There is **no input recorder, input editor, checkpoint system or savestate implementation**.
 
