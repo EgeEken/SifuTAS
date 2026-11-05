@@ -21,6 +21,7 @@
 #include "offsets.g.h"
 #include "trace.h"
 #include "../tas/controls.h"
+#include "../tas/checkpoint.h"
 #include "../ui/overlay.h"
 
 namespace sifucoop::hooks {
@@ -300,6 +301,7 @@ void OnFrame() {
     sifucoop::game::TickEnemies();
     sifucoop::game::TickPuppet();
     sifucoop::game::TickSelfTest();
+    sifucoop::tas::checkpoint::ProcessRequests();
     SampleTimeDilation();
 
     // After everything has moved this frame, so the digest describes the state
@@ -546,7 +548,11 @@ void ActivateAction(tas::Action action) {
             ui::ToggleMenu();
             break;
         case tas::Action::SaveCheckpoint:
+            tas::checkpoint::QueueSave();
+            break;
         case tas::Action::LoadCheckpoint:
+            tas::checkpoint::QueueLoad();
+            break;
         case tas::Action::Count:
             break;
     }

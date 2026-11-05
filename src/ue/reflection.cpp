@@ -283,6 +283,23 @@ bool ApplyAnimState(UObject* actor, const AnimState& state) {
     return true;
 }
 
+bool ClearActiveMontage(UObject* actor) {
+    AnimState before = {};
+    if (!ReadAnimState(actor, &before)) return false;
+    if (!before.montage) return true;
+
+    UObject* anim_instance = GetAnimInstance(actor);
+    if (!anim_instance) return false;
+    struct Params {
+        float InBlendOutTime;
+        UObject* Montage;
+    } params = {0.f, nullptr};
+    if (!CallFunction(anim_instance, L"Montage_Stop", &params)) return false;
+
+    AnimState after = {};
+    return ReadAnimState(actor, &after) && after.montage == nullptr;
+}
+
 bool PlayAnimationAsset(UObject* actor, UObject* animation_asset, float start_at) {
     if (!animation_asset) return false;
     UObject* anim_instance = GetAnimInstance(actor);
@@ -377,6 +394,19 @@ bool IsValidObject(UObject* object) {
 
     const auto class_vtable = *reinterpret_cast<const std::uintptr_t*>(class_private);
     return class_vtable >= g_module_base && class_vtable - g_module_base <= kModuleSpan;
+}
+
+bool IsAliveObject(UObject* object) {
+    if (!IsValidObject(object)) return false;
+    static UObject* kismet = nullptr;
+    if (!kismet)
+        kismet = FindObjectByPath(L"/Script/Engine.Default__KismetSystemLibrary");
+    if (!kismet || !IsValidObject(kismet)) return false;
+    struct Params {
+        UObject* Object;
+        bool ReturnValue;
+    } params = {object, false};
+    return CallFunction(kismet, L"IsValid", &params) && params.ReturnValue;
 }
 
 float GetAnimationAssetLength(UObject* animation_asset) {

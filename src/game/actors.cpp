@@ -357,6 +357,18 @@ bool GetActorVelocity(ue::UObject* actor, ue::FVector* out) {
     return true;
 }
 
+bool CanSetPresentationVelocity(const PresentationTargets& targets) {
+    if (!targets.valid() || !ue::IsValidObject(targets.movement) ||
+        !ue::IsValidObject(targets.root))
+        return false;
+    const auto* movement_velocity = reinterpret_cast<const std::uint8_t*>(targets.movement) +
+                                    kMovementVelocityOffset;
+    const auto* root_velocity = reinterpret_cast<const std::uint8_t*>(targets.root) +
+                                kSceneComponentVelocityOffset;
+    return ue::RangeReadable(movement_velocity, sizeof(ue::FVector)) &&
+           ue::RangeReadable(root_velocity, sizeof(ue::FVector));
+}
+
 PresentationTargets ResolvePresentationTargets(ue::UObject* actor) {
     PresentationTargets targets;
     if (!actor || !g_get_movement_component) return targets;
@@ -395,8 +407,9 @@ bool SetActorSpeedState(ue::UObject* actor, int state) {
 
 bool SetPresentationVelocity(ue::UObject* actor, const ue::FVector& velocity) {
     const PresentationTargets targets = ResolvePresentationTargets(actor);
+    if (!CanSetPresentationVelocity(targets)) return false;
     WritePresentationVelocity(targets, velocity);
-    return targets.valid();
+    return true;
 }
 bool RequestDirectMove(ue::UObject* actor, const ue::FVector& desired_velocity,
                        bool force_max_speed) {

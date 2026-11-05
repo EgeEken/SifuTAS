@@ -12,6 +12,7 @@
 #include "../../third_party/minhook/include/MinHook.h"
 #include "../core/hooks.h"
 #include "../core/log.h"
+#include "../tas/checkpoint.h"
 #include "../tas/controls.h"
 #include "overlay.h"
 
@@ -158,13 +159,31 @@ void DrawPlaybackTab() {
 }
 
 void DrawSavestatesTab() {
-    ImGui::TextDisabled("Checkpoint save/load is not implemented yet.");
+    const tas::checkpoint::Status status = tas::checkpoint::GetStatus();
+    if (ImGui::Button("Save checkpoint (F7)", ImVec2(210, 0)))
+        hooks::ActivateAction(tas::Action::SaveCheckpoint);
+    ImGui::SameLine();
+    if (ImGui::Button("Load checkpoint (F8)", ImVec2(210, 0)))
+        hooks::ActivateAction(tas::Action::LoadCheckpoint);
+    ImGui::Text("Slot 1: %s", status.exists ? "saved in memory" : "empty");
+    ImGui::TextDisabled("Requires a paused training-room encounter with one tracked, living enemy.");
+    ImGui::TextDisabled("Save/load supports quiet, standing actors with no active montage.");
+    ImGui::TextDisabled("Movement mode and pending enemy AI actions are not captured.");
     ImGui::Separator();
-    for (int i = 1; i <= 5; ++i) {
-        ImGui::Text("Slot %d", i);
-        ImGui::SameLine(100.f);
-        ImGui::TextDisabled("Unavailable");
+    if (status.exists) {
+        ImGui::TextWrapped("Level: %s", status.reference.level_path);
+        ImGui::Text("Saved engine tick: %llu (simulation frame unverified)",
+                    static_cast<unsigned long long>(status.reference.engine_tick));
+        ImGui::TextWrapped("Player: %s", status.reference.player_identity);
+        ImGui::Text("Player health %.1f / %.1f, guard %.1f", status.player_health,
+                    status.player_max_health, status.player_guard);
+        ImGui::TextWrapped("Enemy: %s", status.reference.enemy_identity);
+        ImGui::Text("Enemy health %.1f / %.1f, guard %.1f", status.enemy_health,
+                    status.enemy_max_health, status.enemy_guard);
+    } else {
+        ImGui::TextDisabled("No checkpoint is saved.");
     }
+    ImGui::TextWrapped("Last result: %s", status.last_result);
 }
 
 void DrawRecordingTab() {
@@ -192,7 +211,7 @@ void DrawSettingsTab() {
             if (ImGui::SmallButton(button)) g_rebind_action.store(i, std::memory_order_relaxed);
         }
     }
-    ImGui::TextDisabled("Checkpoint shortcuts are reserved and inactive.");
+    ImGui::TextDisabled("F7 saves and F8 loads the in-memory checkpoint.");
     ImGui::Separator();
     for (int i = 0; i < 3; ++i) {
         char label[32] = {};

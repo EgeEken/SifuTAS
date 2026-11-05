@@ -15,29 +15,29 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Immediate milestones
 
-1. **Validate the dedicated SifuTAS GUI and settings**: confirm it stays invisible while closed, is usable with mouse/keyboard while open, remains responsive while paused, and restores normal gameplay input on close. Verify configurable shortcuts/speeds/step count persist and collisions are rejected.
-2. **Validate slowdown** on a training encounter. Distinguish global time dilation from renderer/audio/UI clocks. The recent extended diagnostic session did not reproduce acceleration; its late samples show world time stopped advancing and need a new baseline during active play.
-3. **Validate pause and frame advance**: the engine continues rendering and accepts hotkeys, no catastrophic hangs, no drift/jump when resuming. Check whether input events are buffered during pause and whether multiple worlds tick.
-4. **Capture and inject inputs** at the relevant controller/input processing boundary, preserving press/release edges and analog axes.
-5. **Recording/editing**: frame-indexed input timeline, replay from repeatable encounter starts, per-frame state checksum and divergence reporting.
-6. **Checkpoint v1**: in the training room, save the player and one enemy only from a paused, idle state. Track stable actor identity within the current world and capture root transform, velocity, health, structure/guard, actor time dilation, down state, movement mode, and current montage/time. Restore the same actors by validated pointers or stable gameplay ID, using engine setters for transform/vitals where possible; then resume their AI only after their restored baseline has been checked.
+1. **Validate checkpoint v1 in-game**: use the training room and one enemy; verify supported fields restore and observe the enemy's AI after resuming. The build is compiled but not yet installed or tested in-game.
+2. **Validate the dedicated SifuTAS GUI and settings**: this pass was reported working in-game. Recheck only if checkpoint integration causes a regression.
+3. **Validate slowdown** on a training encounter. The recent extended diagnostic session did not reproduce acceleration; its late samples show world time stopped advancing and need a new baseline during active play.
+4. **Validate pause and frame advance**: the user reports these work. Check for input buffering or multi-world tick differences if later changes affect them.
+5. **Capture and inject inputs** at the relevant controller/input processing boundary, preserving press/release edges and analog axes.
+6. **Recording/editing**: frame-indexed input timeline, replay from repeatable encounter starts, per-frame state checksum and divergence reporting.
 7. **Active-fight savestates**: later reverse engineer behavior-tree/AI state, queued attacks and callbacks, montage/root-motion state, movement and physics, timers, and random streams. Do not treat actor transforms and vitals as a complete arbitrary-frame snapshot.
 
-`src/tas/state_reference.h` defines the small identity portion for a future checkpoint: level path, player/enemy identities, engine tick, optional verified simulation frame, and recording branch ID. It contains no capture or restore behavior.
+`src/tas/state_reference.h` keeps checkpoint identity/timeline metadata separate from the future recording system: level path, player/enemy identities, engine tick, optional verified simulation frame, and recording branch ID.
 
-## Checkpoint v1 strategy
+## Checkpoint v1 limits
 
-Use direct capture and restore of a quiet training-room encounter as the first prototype. Resetting combat systems before restore is riskier for v1: stopping behavior trees or clearing attack/defense components can dispatch callbacks, invalidate object references, or move actors into recovery states. Instead, require a capture/restore gate where player and enemy are alive, standing, not in an active attack/hit reaction montage, and have no pending order. Pause the world, capture both actors and the identified combat fields, restore transforms and movement before vitals and montage state, verify the result, then resume the enemy brain.
+Checkpoint v1 now implements a direct in-memory snapshot of a paused training-room encounter. It requires the same world and tracked actor instances, alive/standing actors, low velocity, and no active montage. It restores transforms, velocity through the existing movement/root velocity helper, max/current health, guard, and custom time dilation, with readback verification. Empty saved montages are handled by stopping any currently active montage and verifying it cleared. F7/F8 requests are processed from the game-thread frame hook; the Savestates GUI only queues requests. Successful loads remain paused.
 
-Use a stable enemy identity based on its current-world object path plus class and spawn generation; invalidate the snapshot when the world changes or the actor is destroyed/replaced. A reset/re-spawn path can be evaluated if that identity fails after training-room reset.
+Identity validation uses the current level path and world pointer, current player pointer, enemy roster/hash and pointer, engine UObject validity, Unreal `IsValid`, object path, and class path. A changed world, level, player, or enemy invalidates the slot. The nearest active tracked enemy within the configured proximity gate is selected at save time.
 
-Likely v1 failures are stale actor references after reset, AI resuming with a queued attack, root motion overriding restored position, montage not restoring its linked animation state, health/structure callbacks firing out of order, and timers/callbacks from before the snapshot running after restore. On any identity or state validation failure, refuse the load and require a fresh capture. This prototype will retry a quiet setup; it will not restore an active fight.
+Movement mode, behavior-tree state, queued enemy actions, attack/defense internals, timers, and callbacks are not captured. Active montages, down/death states, moving actors, destroyed actors, and level transitions are refused; there is no attempt to resurrect or respawn. A write/readback failure reports the exact failed field and may leave an explicitly reported partial restore. The caller must inspect while still paused before resuming. This is not an arbitrary-frame savestate.
 
 ## Known risks
 
-`UWorld::Tick` suppression is an **experiment**, not authoritative engine pausing; other engine timing, animation and input paths may continue. Passing a fixed 1/60 delta to `UWorld::Tick` does not fix the complete engine timestep. `F2` can currently advance a game-world tick without delivering the intended gameplay input. Engine tick hooks may be build-specific or unstable. The prototype does not support deterministic playback or any savestate.
+`UWorld::Tick` suppression is an **experiment**, not authoritative engine pausing; other engine timing, animation and input paths may continue. Passing a fixed 1/60 delta to `UWorld::Tick` does not fix the complete engine timestep. `F2` can currently advance a game-world tick without delivering the intended gameplay input. Engine tick hooks may be build-specific or unstable. The prototype does not support deterministic playback or arbitrary-frame savestates.
 
-The current source still initializes original SifuCoop co-op/network infrastructure. Use `[net] mode=off` and do not attempt multiplayer testing. Decouple the code only after the hook experiments are understood, to minimize simultaneous causes of breakage.
+The current source still initializes original SifuCoop co-op/network infrastructure. Use `[net] mode=off` and do not attempt multiplayer testing. Decouple the code only after the hook experiments are understood, to minimize simultaneous causes of breakage. Checkpoint v1 is an experimental quiet-state restore, not an arbitrary-frame savestate; AI queues, movement mode, timers, and callbacks remain outside the snapshot.
 
 ## Engineering principles
 

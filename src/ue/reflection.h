@@ -42,6 +42,7 @@ struct AnimState {
 bool ReadAnimState(UObject* actor, AnimState* out);
 
 bool ApplyAnimState(UObject* actor, const AnimState& state);
+bool ClearActiveMontage(UObject* actor);
 
 bool PlayAnimationAsset(UObject* actor, UObject* animation_asset, float start_at = 0.f);
 
@@ -50,6 +51,7 @@ void* GetAnimInstanceClass(UObject* actor);
 bool RestoreAnimationBlueprint(UObject* actor, void* anim_class);
 
 bool IsValidObject(UObject* object);
+bool IsAliveObject(UObject* object);
 
 // Whether [address, address + size) is committed, readable memory.
 bool RangeReadable(const void* address, std::size_t size);

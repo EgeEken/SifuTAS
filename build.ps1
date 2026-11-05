@@ -72,6 +72,7 @@ $sources = @(
     "src\core\log.cpp"
     "src\core\hooks.cpp"
     "src\tas\controls.cpp"
+    "src\tas\checkpoint.cpp"
     "src\core\trace.cpp"
     "src\ue\reflection.cpp"
     "src\game\actors.cpp"

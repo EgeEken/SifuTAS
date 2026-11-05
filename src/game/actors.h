@@ -76,6 +76,7 @@ struct PresentationTargets {
 PresentationTargets ResolvePresentationTargets(ue::UObject* actor);
 
 bool GetActorVelocity(ue::UObject* actor, ue::FVector* out);
+bool CanSetPresentationVelocity(const PresentationTargets& targets);
 
 void WritePresentationVelocity(const PresentationTargets& targets,
                                const ue::FVector& velocity);
