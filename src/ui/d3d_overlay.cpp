@@ -2,30 +2,22 @@
 #include <dxgi.h>
 #include <windows.h>
 
-#include <cstdio>
-#include <cstring>
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 
 #include "../../third_party/imgui/backends/imgui_impl_dx11.h"
 #include "../../third_party/imgui/backends/imgui_impl_win32.h"
 #include "../../third_party/imgui/imgui.h"
 #include "../../third_party/minhook/include/MinHook.h"
+#include "../core/hooks.h"
 #include "../core/log.h"
-#include "../game/coop.h"
-#include "../game/player2.h"
-#include "../game/levels.g.h"
-#include "../net/session.h"
+#include "../tas/controls.h"
 #include "overlay.h"
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT message,
-                                                             WPARAM wparam, LPARAM lparam);
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 namespace sifucoop::ui {
-
-namespace levels = sifucoop::levels;
-namespace coop = sifucoop::coop;
-namespace net = sifucoop::net;
-
 namespace {
 
 using PresentFn = HRESULT(__stdcall*)(IDXGISwapChain*, UINT, UINT);
@@ -37,48 +29,40 @@ ResizeBuffersFn g_original_resize_buffers = nullptr;
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
 ID3D11RenderTargetView* g_render_target = nullptr;
-HWND g_window = nullptr;
-
 IDXGISwapChain* g_swap_chain = nullptr;
-
+HWND g_window = nullptr;
+WNDPROC g_original_wndproc = nullptr;
 bool g_initialised = false;
 bool g_failed = false;
-
-CRITICAL_SECTION g_text_lock;
-bool g_text_lock_ready = false;
-char g_text[192] = "SifuCoop";
+std::atomic<bool> g_menu_open{false};
+std::atomic<int> g_rebind_action{-1};
+std::atomic<int> g_settings_status{0};
 
 LRESULT CALLBACK WndProcHook(HWND, UINT, WPARAM, LPARAM);
-void DrawMenu();
-
-WNDPROC g_original_wndproc = nullptr;
 
 bool CreateRenderTarget(IDXGISwapChain* swap_chain) {
     ID3D11Texture2D* back_buffer = nullptr;
     if (FAILED(swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D),
-                                     reinterpret_cast<void**>(&back_buffer))) ||
-        !back_buffer) {
+                                     reinterpret_cast<void**>(&back_buffer))) || !back_buffer)
         return false;
-    }
-    const HRESULT hr = g_device->CreateRenderTargetView(back_buffer, nullptr, &g_render_target);
+    const HRESULT result = g_device->CreateRenderTargetView(back_buffer, nullptr,
+                                                             &g_render_target);
     back_buffer->Release();
-    return SUCCEEDED(hr);
+    return SUCCEEDED(result);
 }
 
 bool InitialiseFrom(IDXGISwapChain* swap_chain) {
     if (FAILED(swap_chain->GetDevice(__uuidof(ID3D11Device),
                                      reinterpret_cast<void**>(&g_device)))) {
-        SC_LOG("d3d: swap chain is not D3D11 -- overlay disabled");
+        SC_LOG("d3d: swap chain is not D3D11 -- TAS GUI unavailable");
         return false;
     }
     g_device->GetImmediateContext(&g_context);
-
     DXGI_SWAP_CHAIN_DESC desc = {};
     swap_chain->GetDesc(&desc);
     g_window = desc.OutputWindow;
-
     if (!CreateRenderTarget(swap_chain)) {
-        SC_LOG("d3d: could not create render target -- overlay disabled");
+        SC_LOG("d3d: render target creation failed -- TAS GUI unavailable");
         return false;
     }
 
@@ -87,462 +71,182 @@ bool InitialiseFrom(IDXGISwapChain* swap_chain) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
-
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
-
     if (!ImGui_ImplWin32_Init(g_window) || !ImGui_ImplDX11_Init(g_device, g_context)) {
-        SC_LOG("d3d: ImGui backend init failed -- overlay disabled");
+        SC_LOG("d3d: ImGui backend initialization failed -- TAS GUI unavailable");
         return false;
     }
-
-    g_original_wndproc = reinterpret_cast<WNDPROC>(
-        SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WndProcHook)));
-
-    SC_LOG("d3d: in-game overlay active (hwnd %p, %ux%u), F1 opens the menu",
-           static_cast<void*>(g_window), desc.BufferDesc.Width, desc.BufferDesc.Height);
+    g_original_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+        g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WndProcHook)));
+    SC_LOG("d3d: SifuTAS GUI ready; F6 opens it, game cursor hooks remain disabled");
     return true;
 }
 
-CRITICAL_SECTION g_menu_lock;
-bool g_menu_lock_ready = false;
-std::atomic<bool> g_menu_open{false};
-
-MenuRequests g_requests;
-bool g_requests_pending = false;
-
-MenuStatus g_status;
-
-constexpr int kMaxSyncRows = 96;
-SyncRow g_sync_rows[kMaxSyncRows];
-int g_sync_row_count = 0;
-
-char g_field_address[64] = "127.0.0.1";
-char g_field_passphrase[64] = {};
-int g_field_port = 7777;
-bool g_field_hosting = true;
-bool g_fields_loaded = false;
-char g_public_address[64] = {};
-
-constexpr int kMaxTailnetRows = 16;
-TailnetRow g_tailnet_rows[kMaxTailnetRows];
-int g_tailnet_row_count = 0;
-char g_tailnet_ip[64] = {};
-bool g_tailnet_answered = false;
-
-void PostRequests(const MenuRequests& requests) {
-    EnterCriticalSection(&g_menu_lock);
-    g_requests = requests;
-    g_requests_pending = true;
-    LeaveCriticalSection(&g_menu_lock);
-}
-
-MenuStatus CopyStatus() {
-    if (!g_menu_lock_ready) return g_status;
-    EnterCriticalSection(&g_menu_lock);
-    MenuStatus copy = g_status;
-    LeaveCriticalSection(&g_menu_lock);
-    return copy;
-}
-
-void DrawPlayTab(const MenuStatus& status) {
-    const coop::Stats& stats = coop::GetStats();
-    const ImVec4 good(0.45f, 0.90f, 0.45f, 1.f);
-    const ImVec4 warn(0.95f, 0.72f, 0.30f, 1.f);
-    const ImVec4 dim(0.65f, 0.65f, 0.65f, 1.f);
-
-    if (!status.connected) {
-        ImGui::TextColored(warn, "Not connected");
-        ImGui::TextColored(dim, "Open Setup, enter your partner's details, then Connect.");
-        if (status.detail[0]) ImGui::TextColored(warn, "%s", status.detail);
-        return;
-    }
-
-    ImGui::TextColored(good, "Connected");
-    ImGui::SameLine();
-    if (stats.rtt_ms >= 0) ImGui::TextColored(dim, "  %d ms", stats.rtt_ms);
-    if (status.detail[0]) ImGui::TextColored(warn, "%s", status.detail);
-
-    ImGui::Spacing();
-    ImGui::Text("You:     %s", status.my_level[0] ? status.my_level : "loading...");
-    ImGui::Text("Partner: %s",
-                status.together ? "here with you"
-                                : (status.peer_known ? status.peer_level : "loading..."));
-
-    if (status.together) {
-        ImGui::Spacing();
-        if (ImGui::Button("Teleport to partner", ImVec2(200, 0))) {
-            MenuRequests r;
-            r.teleport_to_peer = true;
-            PostRequests(r);
-        }
-    }
-
-    if (status.invite_pending) {
-        ImGui::SeparatorText("Invitation");
-        ImGui::TextColored(warn, "Your partner is playing %s", status.invite_level);
-        if (ImGui::Button("Join them", ImVec2(160, 0))) {
-            MenuRequests r;
-            r.accept_invite = true;
-            PostRequests(r);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Not now", ImVec2(120, 0))) {
-            MenuRequests r;
-            r.decline_invite = true;
-            PostRequests(r);
-        }
-        ImGui::Checkbox("Always join automatically", &coop::Get().auto_join_level);
-    } else if (status.hosting) {
-
-        ImGui::Spacing();
-        if (ImGui::Button("Start co-op here", ImVec2(200, 0))) {
-            MenuRequests r;
-            r.invite_peer = true;
-            PostRequests(r);
-        }
-        ImGui::TextColored(dim, status.together
-                                    ? "Your partner is in this level. Press to begin co-op."
-                                    : "Invites your partner into the level you are in.");
+void CaptureBinding(int key) {
+    const int action = g_rebind_action.exchange(-1, std::memory_order_relaxed);
+    if (action < 0) return;
+    unsigned int modifiers = tas::ModifierNone;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) modifiers |= tas::ModifierCtrl;
+    if (GetAsyncKeyState(VK_MENU) & 0x8000) modifiers |= tas::ModifierAlt;
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) modifiers |= tas::ModifierShift;
+    if (tas::SetBinding(static_cast<tas::Action>(action), {key, modifiers})) {
+        g_settings_status.store(1, std::memory_order_relaxed);
     } else {
-        ImGui::Spacing();
-        ImGui::TextColored(dim, "Waiting for the host to start co-op.");
-    }
-
-    if (status.invite_answer_valid) {
-        ImGui::Spacing();
-        if (status.invite_answer_accepted) {
-            ImGui::TextColored(good, "Your partner accepted -- they are on their way.");
-        } else {
-            ImGui::TextColored(warn, "Your partner declined for now.");
-        }
-    }
-
-    if (stats.packets_rejected > 0) {
-        ImGui::Spacing();
-        ImGui::TextColored(warn, "%u packets rejected -- check both passphrases match.",
-                           stats.packets_rejected);
+        g_settings_status.store(2, std::memory_order_relaxed);
     }
 }
 
-// Tailscale puts both PCs on one private network, so the address that
-// reaches the host is an ordinary address again -- no port forwarding, no
-// hole punching, nothing for either player to configure on a router. The
-// only step left was reading the number out to each other, and this is that
-// step: the host sees their own address to send, and the joiner picks the
-// host's machine by name from the tailnet instead of typing it.
-void DrawTailnetPicker(const ImVec4& dim) {
-    if (!ImGui::TreeNodeEx("Tailscale", ImGuiTreeNodeFlags_DefaultOpen)) return;
+LRESULT CALLBACK WndProcHook(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (!g_menu_open.load(std::memory_order_relaxed))
+        return CallWindowProcW(g_original_wndproc, window, message, wparam, lparam);
 
-    if (!g_tailnet_answered) {
-        ImGui::TextColored(dim, "Looking for Tailscale...");
-        ImGui::TreePop();
-        return;
-    }
-
-    if (!g_tailnet_ip[0] && g_tailnet_row_count == 0) {
-        ImGui::TextColored(dim, "Tailscale is not running on this PC.");
-        ImGui::TextColored(dim, "Install it from tailscale.com, sign in on both PCs,");
-        ImGui::TextColored(dim, "and the other machine appears here by name.");
-        if (ImGui::Button("Look again", ImVec2(140, 0))) {
-            MenuRequests r;
-            r.refresh_tailnet = true;
-            PostRequests(r);
+    ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam);
+    if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) &&
+        g_rebind_action.load(std::memory_order_relaxed) >= 0) {
+        if (wparam == VK_ESCAPE) {
+            g_rebind_action.store(-1, std::memory_order_relaxed);
+            return 0;
         }
-        ImGui::TreePop();
-        return;
-    }
-
-    if (g_tailnet_ip[0]) {
-        ImGui::Text("This PC: %s", g_tailnet_ip);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Copy")) ImGui::SetClipboardText(g_tailnet_ip);
-        if (g_field_hosting) {
-            ImGui::TextColored(dim, "Send this to your partner, or let them pick this");
-            ImGui::TextColored(dim, "machine by name from their own list.");
+        if (wparam >= VK_F1 && wparam <= VK_F12) {
+            CaptureBinding(static_cast<int>(wparam));
+            return 0;
         }
     }
 
-    if (!g_field_hosting) {
-        int others = 0;
-        for (int i = 0; i < g_tailnet_row_count; ++i) {
-            if (!g_tailnet_rows[i].self) ++others;
-        }
-        if (others == 0) {
-            ImGui::TextColored(dim, "No other devices on your tailnet yet.");
-        } else {
-            ImGui::TextColored(dim, "Pick the host's machine:");
-            for (int i = 0; i < g_tailnet_row_count; ++i) {
-                const TailnetRow& row = g_tailnet_rows[i];
-                if (row.self) continue;
-                char label[128] = {};
-                _snprintf(label, sizeof(label) - 1, "%s  (%s)%s", row.name, row.ip,
-                          row.online ? "" : "  - offline");
-                // An offline device is still worth showing: it is usually the
-                // right machine with the game not started yet, and hiding it
-                // would look like the partner's PC had vanished.
-                ImGui::BeginDisabled(!row.online);
-                if (ImGui::Selectable(label, strcmp(g_field_address, row.ip) == 0)) {
-                    lstrcpynA(g_field_address, row.ip, sizeof(g_field_address));
-                }
-                ImGui::EndDisabled();
-            }
-        }
-    }
-
-    if (ImGui::SmallButton("Refresh list")) {
-        MenuRequests r;
-        r.refresh_tailnet = true;
-        PostRequests(r);
-    }
-    ImGui::TreePop();
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool mouse_message = message >= WM_MOUSEFIRST && message <= WM_MOUSELAST;
+    const bool keyboard_message = message >= WM_KEYFIRST && message <= WM_KEYLAST;
+    const bool capture_mouse = mouse_message && io.WantCaptureMouse;
+    const bool capture_keyboard = keyboard_message && (io.WantCaptureKeyboard || io.WantTextInput);
+    const bool capture_raw = message == WM_INPUT &&
+                             (io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput);
+    if (capture_mouse || capture_keyboard || capture_raw) return 0;
+    return CallWindowProcW(g_original_wndproc, window, message, wparam, lparam);
 }
 
-void DrawSetupTab(const MenuStatus& status) {
-    const ImVec4 dim(0.65f, 0.65f, 0.65f, 1.f);
-
-    ImGui::RadioButton("Host the game", g_field_hosting);
-    if (ImGui::IsItemClicked()) g_field_hosting = true;
+void DrawPlaybackTab() {
+    const tas::Settings settings = tas::GetSettings();
+    if (ImGui::Button(hooks::IsPaused() ? "Resume" : "Pause", ImVec2(140, 0)))
+        hooks::ActivateAction(tas::Action::PauseResume);
     ImGui::SameLine();
-    ImGui::RadioButton("Join a game", !g_field_hosting);
-    if (ImGui::IsItemClicked()) g_field_hosting = false;
-
-    ImGui::Spacing();
-    ImGui::BeginDisabled(g_field_hosting);
-    ImGui::InputText("Partner's IP", g_field_address, sizeof(g_field_address));
-    ImGui::EndDisabled();
-    if (g_field_hosting) {
-        ImGui::TextColored(dim, "Give your partner an address that can reach this PC.");
-        if (g_public_address[0]) ImGui::TextColored(dim, "Seen from outside: %s",
-                                                    g_public_address);
-    } else {
-        ImGui::TextColored(dim, "Use the host's reachable LAN, VPN, or public address.");
-    }
-
-    DrawTailnetPicker(dim);
-
-    ImGui::InputInt("Port", &g_field_port);
-    ImGui::InputText("Passphrase", g_field_passphrase, sizeof(g_field_passphrase),
-                     ImGuiInputTextFlags_Password);
-    ImGui::TextColored(dim, "Must match on both PCs.");
-
-    ImGui::Spacing();
-    if (ImGui::Button("Connect", ImVec2(140, 0))) {
-        MenuRequests r;
-        r.apply_network = true;
-        r.host_mode = g_field_hosting;
-        lstrcpynA(r.address, g_field_address, sizeof(r.address));
-        lstrcpynA(r.passphrase, g_field_passphrase, sizeof(r.passphrase));
-        r.port = g_field_port;
-        PostRequests(r);
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!status.connected);
-    if (ImGui::Button("Disconnect", ImVec2(140, 0))) {
-        MenuRequests r;
-        r.disconnect_network = true;
-        PostRequests(r);
-    }
+    ImGui::BeginDisabled(!hooks::IsPaused());
+    if (ImGui::Button("Advance", ImVec2(140, 0)))
+        hooks::ActivateAction(tas::Action::FrameAdvance);
     ImGui::EndDisabled();
 
-    if (ImGui::TreeNode("Connection trouble?")) {
-        if (ImGui::Button("Restart networking", ImVec2(180, 0))) {
-            MenuRequests r;
-            r.restart_network = true;
-            PostRequests(r);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Find my public address", ImVec2(200, 0))) {
-            MenuRequests r;
-            r.discover_address = true;
-            PostRequests(r);
-        }
-        ImGui::TextColored(dim, "Use LAN, a private VPN, port forwarding, or hole punching.");
-        ImGui::TreePop();
-    }
-}
-
-void DrawOptionsTab() {
-    coop::Config& config = coop::Get();
-    const ImVec4 dim(0.65f, 0.65f, 0.65f, 1.f);
-
-    ImGui::SeparatorText("Playing together");
-    ImGui::Checkbox("Join my partner's level without asking", &config.auto_join_level);
-    ImGui::Checkbox("Hide my partner's health bar", &config.hide_second_player_hud);
-    ImGui::Checkbox("Show my partner's attacks", &config.remote_player_attacks);
-    ImGui::TextColored(dim, "Visual only -- their hits are resolved on their own PC.");
-    ImGui::Checkbox("Friendly fire: my partner's hits can hurt me", &config.friendly_fire);
-    ImGui::TextColored(dim, "Their swings become real attacks here. Set it on both PCs.");
-
-    ImGui::SeparatorText("This menu");
-    ImGui::Checkbox("Block the game while this menu is open", &config.menu_exclusive_input);
-    ImGui::TextColored(dim, "Off by default, so clicks and keys still reach Sifu.");
-
-    ImGui::SeparatorText("Smoothing");
-    ImGui::Checkbox("Adapt to connection quality", &config.adaptive_interp);
-
-    ImGui::Spacing();
-    if (ImGui::Button("Save settings", ImVec2(160, 0))) {
-        MenuRequests r;
-        r.save_config = true;
-        PostRequests(r);
+    ImGui::Text("Playback speed: %.3fx", hooks::PlaybackSpeed());
+    ImGui::TextDisabled("Select a speed; selecting it again toggles back to 1x.");
+    const tas::Action speed_actions[] = {tas::Action::SpeedHalf, tas::Action::SpeedFifth,
+                                         tas::Action::SpeedTenth};
+    for (int i = 0; i < 3; ++i) {
+        char label[48] = {};
+        _snprintf_s(label, sizeof(label), _TRUNCATE, "%.3gx", settings.speeds[i]);
+        if (i) ImGui::SameLine();
+        if (ImGui::Button(label, ImVec2(112, 0))) hooks::ActivateAction(speed_actions[i]);
     }
     ImGui::SameLine();
-    ImGui::TextColored(dim, "Kept in SifuCoop.ini next to the game.");
-}
-
-void DrawDiagnosticsTab() {
-    const coop::Stats& stats = coop::GetStats();
-    coop::Config& config = coop::Get();
-    const ImVec4 dim(0.65f, 0.65f, 0.65f, 1.f);
-
-    ImGui::TextColored(dim, "For bug reports. Nothing here is needed to play.");
-    ImGui::Spacing();
-    ImGui::Text("Ping           %d ms", stats.rtt_ms);
-    ImGui::Text("Enemies        %d active, %d synced", stats.enemies_active,
-                stats.enemies_driven);
-    ImGui::Text("Damage         %.0f sent, %.0f applied", stats.damage_reported_total,
-                stats.damage_applied_total);
-    ImGui::Text("Attacks echoed %u", stats.attacks_echoed);
-
-    ImGui::SeparatorText("Extra logging");
-    ImGui::Checkbox("Enemy detail", &config.verbose_enemies);
-    ImGui::Checkbox("Combat detail", &config.verbose_orders);
+    if (ImGui::Button("1x", ImVec2(72, 0))) hooks::SetPlaybackSpeed(1.f);
 
     ImGui::Spacing();
-    if (ImGui::Button("Write roster to log", ImVec2(180, 0))) {
-        MenuRequests r;
-        r.log_roster = true;
-        PostRequests(r);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Respawn partner's body", ImVec2(190, 0))) {
-        MenuRequests r;
-        r.despawn_puppet = true;
-        PostRequests(r);
-    }
-    ImGui::TextColored(dim, "Log: %%LOCALAPPDATA%%\\Sifu\\Saved\\Logs\\SifuCoop.log");
+    int frames = settings.frames_per_step;
+    if (ImGui::SliderInt("Frames per advance", &frames, 1, 10))
+        tas::SetFramesPerStep(frames);
+    if (ImGui::IsItemDeactivatedAfterEdit()) tas::SaveSettings();
+    ImGui::Text("Engine tick calls: %llu", hooks::FrameCount());
+    ImGui::TextDisabled("This is not a verified simulation-frame count.");
 }
 
-void DrawInviteBanner(const MenuStatus& status) {
-    if (!status.invite_pending) return;
+void DrawSavestatesTab() {
+    ImGui::TextDisabled("Checkpoint save/load is not implemented yet.");
+    ImGui::Separator();
+    for (int i = 1; i <= 5; ++i) {
+        ImGui::Text("Slot %d", i);
+        ImGui::SameLine(100.f);
+        ImGui::TextDisabled("Unavailable");
+    }
+}
 
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImVec2 centre(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                        viewport->WorkPos.y + viewport->WorkSize.y * 0.12f);
-    ImGui::SetNextWindowPos(centre, ImGuiCond_Always, ImVec2(0.5f, 0.f));
-    ImGui::SetNextWindowBgAlpha(0.88f);
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
-                                   ImGuiWindowFlags_AlwaysAutoResize |
-                                   ImGuiWindowFlags_NoSavedSettings |
-                                   ImGuiWindowFlags_NoFocusOnAppearing |
-                                   ImGuiWindowFlags_NoNav;
-    if (ImGui::Begin("##sifucoop_invite", nullptr, flags)) {
-        ImGui::TextColored(ImVec4(1.f, 0.85f, 0.35f, 1.f), "Your partner invited you");
-        ImGui::TextDisabled("%s", status.invite_level);
-        ImGui::Spacing();
+void DrawRecordingTab() {
+    ImGui::TextDisabled("Input recording and playback are not implemented yet.");
+    ImGui::Separator();
+    ImGui::TextDisabled("No recording controls are active.");
+}
 
-        if (g_menu_open.load()) {
-            if (ImGui::Button("Accept", ImVec2(120, 0))) {
-                MenuRequests r;
-                r.accept_invite = true;
-                PostRequests(r);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Decline", ImVec2(120, 0))) {
-                MenuRequests r;
-                r.decline_invite = true;
-                PostRequests(r);
-            }
+void DrawSettingsTab() {
+    tas::Settings settings = tas::GetSettings();
+    ImGui::TextDisabled("Function-key shortcuts support Ctrl, Alt, and Shift.");
+    for (int i = 0; i < static_cast<int>(tas::Action::Count); ++i) {
+        const auto action = static_cast<tas::Action>(i);
+        char shortcut[48] = {};
+        tas::BindingText(settings.bindings[i], shortcut, sizeof(shortcut));
+        ImGui::TextUnformatted(tas::ActionName(action));
+        ImGui::SameLine(225.f);
+        if (g_rebind_action.load(std::memory_order_relaxed) == i) {
+            ImGui::TextDisabled("Press F1-F12 (Esc cancels)");
         } else {
-            ImGui::TextDisabled("Press F1 to accept or decline.");
+            ImGui::TextDisabled("%s", shortcut);
+            ImGui::SameLine(390.f);
+            char button[32] = {};
+            _snprintf_s(button, sizeof(button), _TRUNCATE, "Rebind##%d", i);
+            if (ImGui::SmallButton(button)) g_rebind_action.store(i, std::memory_order_relaxed);
         }
     }
-    ImGui::End();
+    ImGui::TextDisabled("Checkpoint shortcuts are reserved and inactive.");
+    ImGui::Separator();
+    for (int i = 0; i < 3; ++i) {
+        char label[32] = {};
+        _snprintf_s(label, sizeof(label), _TRUNCATE, "Speed %d multiplier", i + 1);
+        float speed = settings.speeds[i];
+        if (ImGui::SliderFloat(label, &speed, 0.01f, 2.f, "%.2fx"))
+            tas::SetSpeed(i, speed);
+        if (ImGui::IsItemDeactivatedAfterEdit()) tas::SaveSettings();
+    }
+    int frames = settings.frames_per_step;
+    if (ImGui::SliderInt("Frames per advance", &frames, 1, 10))
+        tas::SetFramesPerStep(frames);
+    if (ImGui::IsItemDeactivatedAfterEdit()) tas::SaveSettings();
+    if (!tas::SettingsSaved())
+        ImGui::TextWrapped("Settings could not be saved beside dsound.dll. Check folder permissions.");
+    const int status = g_settings_status.load(std::memory_order_relaxed);
+    if (status == 1) ImGui::TextDisabled("Binding applied.");
+    if (status == 2) ImGui::TextDisabled("That shortcut is already assigned.");
 }
 
 void DrawMenu() {
-    ImGui::SetNextWindowSize(ImVec2(560, 390), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.94f);
-    if (!ImGui::Begin("SifuCoop", nullptr, ImGuiWindowFlags_NoCollapse)) {
+    const tas::Settings settings = tas::GetSettings();
+    ImGui::SetNextWindowSize(ImVec2(680, 500), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowBgAlpha(0.96f);
+    if (!ImGui::Begin("SifuTAS", nullptr, ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
     }
-
-    const MenuStatus status = CopyStatus();
-    if (ImGui::BeginTabBar("tabs")) {
-        if (ImGui::BeginTabItem("Play")) {
-            DrawPlayTab(status);
+    if (ImGui::BeginTabBar("sifutas-tabs")) {
+        if (ImGui::BeginTabItem("Playback")) {
+            DrawPlaybackTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Setup")) {
-            DrawSetupTab(status);
+        if (ImGui::BeginTabItem("Savestates")) {
+            DrawSavestatesTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Options")) {
-            DrawOptionsTab();
+        if (ImGui::BeginTabItem("Recording")) {
+            DrawRecordingTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Diagnostics")) {
-            DrawDiagnosticsTab();
+        if (ImGui::BeginTabItem("Settings")) {
+            DrawSettingsTab();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
-
     ImGui::Separator();
-    ImGui::TextDisabled("F1 closes this menu");
+    char close_binding[48] = {};
+    tas::BindingText(settings.bindings[static_cast<int>(tas::Action::ToggleGui)],
+                     close_binding, sizeof(close_binding));
+    ImGui::TextDisabled("%s closes the GUI. Simulation keeps responding to pause and step controls.",
+                        close_binding);
     ImGui::End();
-}
-
-LRESULT CALLBACK WndProcHook(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (g_menu_open.load()) {
-        ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam);
-        switch (message) {
-            case WM_MOUSEMOVE:
-            case WM_LBUTTONDOWN:
-            case WM_LBUTTONUP:
-            case WM_LBUTTONDBLCLK:
-            case WM_RBUTTONDOWN:
-            case WM_RBUTTONUP:
-            case WM_RBUTTONDBLCLK:
-            case WM_MBUTTONDOWN:
-            case WM_MBUTTONUP:
-            case WM_MBUTTONDBLCLK:
-            case WM_XBUTTONDOWN:
-            case WM_XBUTTONUP:
-            case WM_XBUTTONDBLCLK:
-            case WM_MOUSEWHEEL:
-            case WM_MOUSEHWHEEL:
-            case WM_KEYDOWN:
-            case WM_KEYUP:
-            case WM_SYSKEYDOWN:
-            case WM_SYSKEYUP:
-            case WM_CHAR:
-            case WM_SYSCHAR:
-            case WM_UNICHAR:
-            case WM_INPUT: {
-                const ImGuiIO& io = ImGui::GetIO();
-                const bool mouse_message =
-                    message >= WM_MOUSEFIRST && message <= WM_MOUSELAST;
-                const bool keyboard_message =
-                    message >= WM_KEYFIRST && message <= WM_KEYLAST;
-                const bool capture_keyboard =
-                    keyboard_message && (io.WantCaptureKeyboard || io.WantTextInput);
-                const bool capture_raw =
-                    message == WM_INPUT &&
-                    (io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput);
-                if (coop::Get().menu_exclusive_input &&
-                    ((mouse_message && io.WantCaptureMouse) || capture_keyboard || capture_raw)) {
-                    return 0;
-                }
-                break;
-            }
-            default:
-                break;
-        }
-    }
-    return CallWindowProcW(g_original_wndproc, window, message, wparam, lparam);
 }
 
 void FeedMenuInput() {
@@ -552,15 +256,11 @@ void FeedMenuInput() {
         io.AddMouseButtonEvent(1, false);
         return;
     }
-
     POINT cursor = {};
-    if (GetCursorPos(&cursor) && ScreenToClient(g_window, &cursor)) {
+    if (GetCursorPos(&cursor) && ScreenToClient(g_window, &cursor))
         io.AddMousePosEvent(static_cast<float>(cursor.x), static_cast<float>(cursor.y));
-    }
-
     io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
     io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
-
 }
 
 void ReleaseRenderTarget() {
@@ -570,11 +270,10 @@ void ReleaseRenderTarget() {
     }
 }
 
-HRESULT __stdcall ResizeBuffersHook(IDXGISwapChain* swap_chain, UINT buffer_count, UINT width,
+HRESULT __stdcall ResizeBuffersHook(IDXGISwapChain* swap_chain, UINT count, UINT width,
                                     UINT height, DXGI_FORMAT format, UINT flags) {
-
     if (swap_chain == g_swap_chain) ReleaseRenderTarget();
-    return g_original_resize_buffers(swap_chain, buffer_count, width, height, format, flags);
+    return g_original_resize_buffers(swap_chain, count, width, height, format, flags);
 }
 
 HRESULT __stdcall PresentHook(IDXGISwapChain* swap_chain, UINT sync_interval, UINT flags) {
@@ -583,43 +282,20 @@ HRESULT __stdcall PresentHook(IDXGISwapChain* swap_chain, UINT sync_interval, UI
         if (!g_initialised) g_failed = true;
         if (g_initialised) g_swap_chain = swap_chain;
     }
-
-    if (swap_chain != g_swap_chain) {
+    if (swap_chain != g_swap_chain) return g_original_present(swap_chain, sync_interval, flags);
+    if (g_initialised && !g_render_target && g_device && !CreateRenderTarget(swap_chain))
         return g_original_present(swap_chain, sync_interval, flags);
-    }
-
-    if (g_initialised && !g_render_target && g_device) {
-        if (!CreateRenderTarget(swap_chain)) {
-            return g_original_present(swap_chain, sync_interval, flags);
-        }
-    }
-
-    if (g_initialised) {
-        static bool f1_was_down = false;
-        const bool game_focused = GetForegroundWindow() == g_window;
-        const bool f1_down = game_focused && (GetAsyncKeyState(VK_F1) & 0x8000) != 0;
-        if (f1_down && !f1_was_down) {
-            g_menu_open = !g_menu_open;
-            ImGui::GetIO().MouseDrawCursor = g_menu_open;
-            SC_LOG("menu: %s", g_menu_open ? "opened" : "closed");
-        }
-        f1_was_down = f1_down;
-    }
-
     if (g_initialised && g_render_target) {
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
-        if (g_menu_open) FeedMenuInput();
+        ImGui::GetIO().MouseDrawCursor = g_menu_open.load(std::memory_order_relaxed);
+        if (g_menu_open.load(std::memory_order_relaxed)) FeedMenuInput();
         ImGui::NewFrame();
-
-        DrawInviteBanner(CopyStatus());
-        if (g_menu_open) DrawMenu();
+        if (g_menu_open.load(std::memory_order_relaxed)) DrawMenu();
         ImGui::Render();
-
         g_context->OMSetRenderTargets(1, &g_render_target, nullptr);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     }
-
     return g_original_present(swap_chain, sync_interval, flags);
 }
 
@@ -628,13 +304,11 @@ void* FindPresent(void** out_resize_buffers) {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"SifuCoopDummy";
+    wc.lpszClassName = L"SifuTASProbe";
     RegisterClassExW(&wc);
-
     HWND dummy = CreateWindowW(wc.lpszClassName, L"", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64,
                                nullptr, nullptr, wc.hInstance, nullptr);
     if (!dummy) return nullptr;
-
     DXGI_SWAP_CHAIN_DESC desc = {};
     desc.BufferCount = 1;
     desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -643,26 +317,21 @@ void* FindPresent(void** out_resize_buffers) {
     desc.SampleDesc.Count = 1;
     desc.Windowed = TRUE;
     desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
     IDXGISwapChain* swap_chain = nullptr;
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
-
-    const HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &desc,
-        &swap_chain, &device, nullptr, &context);
-
+    const HRESULT result = D3D11CreateDeviceAndSwapChain(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2, D3D11_SDK_VERSION,
+        &desc, &swap_chain, &device, nullptr, &context);
     void* present = nullptr;
-    if (SUCCEEDED(hr) && swap_chain) {
-
+    if (SUCCEEDED(result) && swap_chain) {
         void** vtable = *reinterpret_cast<void***>(swap_chain);
         present = vtable[8];
         *out_resize_buffers = vtable[13];
     } else {
-        SC_LOG("d3d: could not create a probe swap chain (0x%08lX)", hr);
+        SC_LOG("d3d: probe swap chain creation failed (0x%08lX)", result);
     }
-
     if (swap_chain) swap_chain->Release();
     if (context) context->Release();
     if (device) device->Release();
@@ -674,110 +343,40 @@ void* FindPresent(void** out_resize_buffers) {
 }
 
 bool StartInGameOverlay() {
-    if (!g_text_lock_ready) {
-        InitializeCriticalSection(&g_text_lock);
-        g_text_lock_ready = true;
-    }
-    if (!g_menu_lock_ready) {
-        InitializeCriticalSection(&g_menu_lock);
-        g_menu_lock_ready = true;
-    }
-
     void* resize_buffers = nullptr;
     void* present = FindPresent(&resize_buffers);
-    if (!present) {
-        SC_LOG("d3d: Present not found -- falling back to the window overlay");
-        return false;
-    }
-
+    if (!present) return false;
     MH_Initialize();
     if (MH_CreateHook(present, reinterpret_cast<void*>(&PresentHook),
                       reinterpret_cast<void**>(&g_original_present)) != MH_OK ||
         MH_EnableHook(present) != MH_OK) {
-        SC_LOG("d3d: failed to hook Present -- falling back to the window overlay");
+        SC_LOG("d3d: Present hook failed -- TAS GUI unavailable");
         return false;
     }
-
-    if (resize_buffers &&
+    if (!resize_buffers ||
         MH_CreateHook(resize_buffers, reinterpret_cast<void*>(&ResizeBuffersHook),
-                      reinterpret_cast<void**>(&g_original_resize_buffers)) == MH_OK &&
-        MH_EnableHook(resize_buffers) == MH_OK) {
-        SC_LOG("d3d: Present + ResizeBuffers hooked");
-    } else {
-        SC_LOG("d3d: ResizeBuffers hook FAILED -- disabling overlay, a fullscreen "
-               "switch would crash the game");
+                      reinterpret_cast<void**>(&g_original_resize_buffers)) != MH_OK ||
+        MH_EnableHook(resize_buffers) != MH_OK) {
+        SC_LOG("d3d: ResizeBuffers hook failed -- TAS GUI unavailable");
         MH_DisableHook(present);
         return false;
     }
+    SC_LOG("d3d: Present + ResizeBuffers hooked for SifuTAS GUI");
     return true;
 }
 
-bool TakeMenuRequests(MenuRequests* out) {
-    if (!g_menu_lock_ready || !out) return false;
-    EnterCriticalSection(&g_menu_lock);
-    const bool pending = g_requests_pending;
-    if (pending) {
-        *out = g_requests;
-        g_requests_pending = false;
-    }
-    LeaveCriticalSection(&g_menu_lock);
-    return pending;
+bool TakeMenuRequests(MenuRequests*) { return false; }
+void SetMenuStatus(const MenuStatus&) {}
+void SetTailnetRows(const TailnetRow*, int) {}
+void SetSyncRows(const SyncRow*, int) {}
+bool IsMenuOpen() { return g_menu_open.load(std::memory_order_relaxed); }
+void ToggleMenu() { SetMenuOpen(!IsMenuOpen()); }
+void SetMenuOpen(bool open) {
+    g_menu_open.store(open, std::memory_order_relaxed);
+    if (!open) g_rebind_action.store(-1, std::memory_order_relaxed);
+    SC_LOG("tas: GUI %s", open ? "opened" : "closed");
 }
-
-void SetMenuStatus(const MenuStatus& status) {
-    if (!g_menu_lock_ready) return;
-    EnterCriticalSection(&g_menu_lock);
-    g_status = status;
-
-    if (!g_fields_loaded) {
-        g_fields_loaded = true;
-        char ini[MAX_PATH] = {};
-        char mode[16] = {};
-        coop::IniPath(ini, sizeof(ini));
-        GetPrivateProfileStringA("net", "mode", status.hosting ? "host" : "client", mode,
-                                 sizeof(mode), ini);
-        g_field_hosting = _stricmp(mode, "client") != 0;
-        GetPrivateProfileStringA("net", "host", g_field_address, g_field_address,
-                                 sizeof(g_field_address), ini);
-        g_field_port = GetPrivateProfileIntA("net", "port", g_field_port, ini);
-        if (g_field_port < 1 || g_field_port > 65535) g_field_port = 7777;
-        GetPrivateProfileStringA("net", "passphrase", "", g_field_passphrase,
-                                 sizeof(g_field_passphrase), ini);
-    }
-    lstrcpynA(g_public_address, status.public_address, sizeof(g_public_address));
-    lstrcpynA(g_tailnet_ip, status.tailnet_ip, sizeof(g_tailnet_ip));
-    g_tailnet_answered = status.tailnet_answered;
-    LeaveCriticalSection(&g_menu_lock);
-}
-
-void SetTailnetRows(const TailnetRow* rows, int count) {
-    if (!g_menu_lock_ready || !rows) return;
-    if (count < 0) count = 0;
-    if (count > kMaxTailnetRows) count = kMaxTailnetRows;
-    EnterCriticalSection(&g_menu_lock);
-    for (int i = 0; i < count; ++i) g_tailnet_rows[i] = rows[i];
-    g_tailnet_row_count = count;
-    LeaveCriticalSection(&g_menu_lock);
-}
-
-void SetSyncRows(const SyncRow* rows, int count) {
-    if (!g_menu_lock_ready || !rows) return;
-    if (count < 0) count = 0;
-    if (count > kMaxSyncRows) count = kMaxSyncRows;
-    EnterCriticalSection(&g_menu_lock);
-    for (int i = 0; i < count; ++i) g_sync_rows[i] = rows[i];
-    g_sync_row_count = count;
-    LeaveCriticalSection(&g_menu_lock);
-}
-
-bool IsMenuOpen() { return g_menu_open; }
-
-void SetInGameOverlayText(const char* text) {
-    if (!text) return;
-    if (!g_text_lock_ready) return;
-    EnterCriticalSection(&g_text_lock);
-    lstrcpynA(g_text, text, sizeof(g_text));
-    LeaveCriticalSection(&g_text_lock);
-}
+bool IsBindingCaptureActive() { return g_rebind_action.load(std::memory_order_relaxed) >= 0; }
+void SetInGameOverlayText(const char*) {}
 
 }

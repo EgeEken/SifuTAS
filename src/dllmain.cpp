@@ -16,6 +16,8 @@
 #include "net/protocol.h"
 #include "net/session.h"
 #include "core/offsets.g.h"
+#include "tas/controls.h"
+#include "ui/overlay.h"
 #include "ue/reflection.h"
 
 namespace sifucoop::proxy {
@@ -251,6 +253,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
         return 0;
     }
 
+    sifucoop::tas::LoadSettings();
     sifucoop::coop::Load();
     const bool network_started = sifucoop::net::StartSession();
     if (!network_started && sifucoop::net::GetRole() == sifucoop::net::Role::Host) {
@@ -270,14 +273,15 @@ DWORD WINAPI Bootstrap(LPVOID) {
     sifucoop::game::InitSelfTest();
     sifucoop::game::InitReplayProbe();
 
-    SC_LOG("ui: inherited multiplayer overlays disabled; TAS hotkeys only");
+    if (!sifucoop::ui::StartInGameOverlay())
+        SC_LOG("ui: TAS GUI unavailable; keyboard controls remain active");
 
     if (!sifucoop::hooks::InstallTickHook(base, engine)) {
         SC_LOG("bootstrap: tick hook not installed -- mod is inert");
         return 0;
     }
 
-    SC_LOG("bootstrap: armed -- F1 pause, F2 step, F3 0.5x, F4 0.2x, F5 0.1x");
+    SC_LOG("bootstrap: armed -- SifuTAS controls loaded from SifuTAS.ini");
     return 0;
 }
 

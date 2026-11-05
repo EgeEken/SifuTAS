@@ -1,6 +1,6 @@
 # Phase 1 test procedure (Windows)
 
-**Status:** the user reports F1–F5, pause, frame stepping and mouse behavior work in-game. Cinematic transitions appear preserved. Extended play showed gradual apparent acceleration (around 1.5×); cause remains under investigation.
+**Status:** the user previously reported F1–F5, pause, frame stepping and normal mouse behavior working in-game. Multiplicative slowdown appeared to preserve cinematic transitions. An extended diagnostic test did not reproduce the reported acceleration. The stored base dilation moved through Sifu time effects and returned to 1.0; the time-dilation setter logged changes from caller RVA `0x033638F7`, without a monotonic upward drift. At 1×, samples ranged to about 1.006 world seconds per real second during active progression. Later, `world_time` froze while `real_time` advanced, with `paused=0` and no enemy identified, so that segment is not a valid normal gameplay-speed measurement. The dedicated GUI/configuration pass has compiled but is not yet installed or tested in-game.
 
 The current diagnostic build logs a `tas: diag` sample about once per second on the game thread. It includes the three stored world dilation fields, original and TAS-scaled effective values, player and nearest active enemy custom dilation, the latest current-world tick delta, world/real time deltas, and world-time-to-wall-time ratios. Native setter change records include caller RVAs and are rate-limited. Do not treat diagnostics as game-tested until this build has run in Sifu.
 
@@ -15,6 +15,7 @@ The current diagnostic build logs a `tas: diag` sample about once per second on 
 - 2026-11-04: the effective-time-dilation hook and F1–F5 presets built successfully against the same Steam fingerprint; installation was held for backup verification and approval.
 - 2026-11-05: after approval, the multiplicative-time-scale build replaced the prior DLL. Installed SHA-256: `ACD98E654B6ECCE2C64DE13734A48CE896900CE6678F66809595C5FB69E56523`. Prior installed DLL and earlier rollback copy are preserved in `build/`.
 - 2026-11-05: the diagnostic pass resolved the Steam PDB fields and setter RVAs, passed the build script's crypto vectors, and compiled a 1,228,288-byte DLL. It has not been deployed or tested in-game.
+- 2026-11-05: the dedicated TAS GUI/configuration pass rebuilt against the same Steam fingerprint, resolved 16/16 PDB member offsets, passed the crypto test vectors, and compiled a 1,226,752-byte DLL (SHA-256 `168E1CB5A3BEF36AE4A6A2FF69333DB496D8EBD4ED7E49C7A4258C10C9483F5C`). This build has not been deployed or tested in-game.
 
 ## Preconditions
 
@@ -35,6 +36,9 @@ The current diagnostic build logs a `tas: diag` sample about once per second on 
 7. At each preset, press **F1** to pause, **F2** repeatedly to step, then **F1** to resume. Confirm the selected preset survives pausing and each step advances the same increment.
 8. Test pause and resume after loading a different room; ensure loading transitions cannot wedge the simulation. Re-select a speed preset to return to 1×.
 9. For acceleration diagnostics, run unpaused at 1× for a sustained baseline in the training room, with no speed hotkeys pressed. Compare `world_per_real`, `world_per_wall`, stored dilation components, and `product` versus `original`; retain logs before and after any apparent speed change.
+10. Open the GUI with **F6**. Confirm the Playback, Savestates, Recording, and Settings tabs render, mouse and keyboard work while paused, and the cursor is visible only while the GUI is open. Close with F6 and confirm normal camera movement and gameplay input return.
+11. Use GUI buttons and their shortcuts to pause/resume, select speeds, and advance frames. Change the step count from 1 to 2–10 and verify that many world-tick hook calls run while paused. The displayed engine tick counter is not a verified simulation-frame count.
+12. Rebind actions to unique function keys and Ctrl/Alt/Shift combinations; verify duplicate shortcuts are rejected and valid settings persist across restarts. F7/F8 must remain visibly marked as future and inactive actions. Confirm no co-op menu or external overlay appears during ordinary gameplay.
 
 ## Logs
 

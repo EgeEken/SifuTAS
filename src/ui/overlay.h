@@ -103,5 +103,8 @@ struct SyncRow {
 void SetSyncRows(const SyncRow* rows, int count);
 
 bool IsMenuOpen();
+void ToggleMenu();
+void SetMenuOpen(bool open);
+bool IsBindingCaptureActive();
 
 }

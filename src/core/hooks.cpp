@@ -20,6 +20,8 @@
 #include "log.h"
 #include "offsets.g.h"
 #include "trace.h"
+#include "../tas/controls.h"
+#include "../ui/overlay.h"
 
 namespace sifucoop::hooks {
 namespace {
@@ -33,7 +35,6 @@ using EffectiveTimeDilationFn = float(__fastcall*)(void*);
 using SetTimeDilationFn = float(__fastcall*)(void*, float);
 using SetDemoPlayTimeDilationFn = void(__fastcall*)(void*, float);
 
-constexpr float kSpeedPresets[] = {0.5f, 0.2f, 0.1f};
 constexpr float kFrameStepSeconds = 1.f / 60.f;
 
 std::uintptr_t g_base = 0;
@@ -47,7 +48,7 @@ void* g_world_tick_target = nullptr;
 void* g_effective_time_dilation_target = nullptr;
 void* g_set_time_dilation_target = nullptr;
 void* g_set_demo_play_time_dilation_target = nullptr;
-std::atomic<bool> g_step_requested{false};
+std::atomic<int> g_steps_requested{0};
 std::atomic<bool> g_step_in_progress{false};
 std::atomic<float> g_last_world_tick_delta{0.f};
 unsigned long long g_steps = 0;
@@ -75,21 +76,11 @@ bool GameFocused() {
     return process_id == GetCurrentProcessId();
 }
 
-bool Pressed(int key, bool focused) {
-    static bool previous[5] = {};
-    const int index = key - VK_F1;
-    if (index < 0 || index >= 5) return false;
-    const bool down = (GetAsyncKeyState(key) & 0x8000) != 0;
-    const bool pressed = down && !previous[index];
-    previous[index] = down;
-    return focused && pressed;
-}
-
 const char* PresetName(float multiplier) {
     if (std::fabs(multiplier - 0.5f) < 0.001f) return "0.5x";
     if (std::fabs(multiplier - 0.2f) < 0.001f) return "0.2x";
     if (std::fabs(multiplier - 0.1f) < 0.001f) return "0.1x";
-    return "1.0x";
+    return std::fabs(multiplier - 1.f) < 0.001f ? "1.0x" : "custom";
 }
 
 bool SetterLogWindowOpen() {
@@ -263,42 +254,11 @@ void SampleTimeDilation() {
 }
 
 void PollTASKeys() {
-    const bool focused = GameFocused();
-    const bool pause = Pressed(VK_F1, focused);
-    const bool step = Pressed(VK_F2, focused);
-    const bool half = Pressed(VK_F3, focused);
-    const bool fifth = Pressed(VK_F4, focused);
-    const bool tenth = Pressed(VK_F5, focused);
-
-    if (half) {
-        const float current = g_tas_multiplier.load(std::memory_order_relaxed);
-        const float next = std::fabs(current - kSpeedPresets[0]) < 0.001f
-                               ? 1.f : kSpeedPresets[0];
-        g_tas_multiplier.store(next, std::memory_order_relaxed);
-        SC_LOG("tas: multiplier selected %s", PresetName(next));
-    } else if (fifth) {
-        const float current = g_tas_multiplier.load(std::memory_order_relaxed);
-        const float next = std::fabs(current - kSpeedPresets[1]) < 0.001f
-                               ? 1.f : kSpeedPresets[1];
-        g_tas_multiplier.store(next, std::memory_order_relaxed);
-        SC_LOG("tas: multiplier selected %s", PresetName(next));
-    } else if (tenth) {
-        const float current = g_tas_multiplier.load(std::memory_order_relaxed);
-        const float next = std::fabs(current - kSpeedPresets[2]) < 0.001f
-                               ? 1.f : kSpeedPresets[2];
-        g_tas_multiplier.store(next, std::memory_order_relaxed);
-        SC_LOG("tas: multiplier selected %s", PresetName(next));
+    const bool focused = GameFocused() && !ui::IsBindingCaptureActive();
+    for (int i = 0; i < static_cast<int>(tas::Action::Count); ++i) {
+        const auto action = static_cast<tas::Action>(i);
+        if (tas::WasActionPressed(action, focused)) ActivateAction(action);
     }
-
-    if (pause && g_original_world_tick) {
-        const bool paused = !g_paused.load(std::memory_order_relaxed);
-        g_paused.store(paused, std::memory_order_relaxed);
-        g_step_requested.store(false, std::memory_order_relaxed);
-        SC_LOG("tas: %s", paused ? "paused" : "resumed");
-    }
-
-    if (step && g_paused.load(std::memory_order_relaxed) && g_original_world_tick)
-        g_step_requested.store(true, std::memory_order_relaxed);
 }
 
 void __fastcall WorldTickHook(void* self, int tick_type, float delta_seconds) {
@@ -310,7 +270,10 @@ void __fastcall WorldTickHook(void* self, int tick_type, float delta_seconds) {
         return;
     }
 
-    if (!g_step_requested.exchange(false, std::memory_order_relaxed)) return;
+    int requested = g_steps_requested.load(std::memory_order_relaxed);
+    while (requested > 0 && !g_steps_requested.compare_exchange_weak(
+                                requested, requested - 1, std::memory_order_relaxed)) {}
+    if (requested <= 0) return;
     g_step_in_progress.store(true, std::memory_order_relaxed);
     g_original_world_tick(self, tick_type, kFrameStepSeconds);
     g_step_in_progress.store(false, std::memory_order_relaxed);
@@ -323,10 +286,10 @@ TickFn g_original_tick = nullptr;
 void** g_vtable = nullptr;
 int g_tick_slot = -1;
 
-unsigned long long g_frames = 0;
+std::atomic<unsigned long long> g_frames{0};
 
 void OnFrame() {
-    ++g_frames;
+    const auto frame = ++g_frames;
 
     // The socket is pumped before anything that needs a world, so menus and
     // level loads keep acknowledging, pinging and receiving.
@@ -343,7 +306,7 @@ void OnFrame() {
     // the player actually saw.
     sifucoop::trace::Tick();
 
-    if (g_frames % 30 != 0) return;
+    if (frame % 30 != 0) return;
 
     ue::UObject* world = ue::GetWorld();
     if (!world) return;
@@ -546,6 +509,57 @@ void RemoveTickHook() {
 
 float FrameDeltaSeconds() { return g_frame_delta; }
 
-unsigned long long FrameCount() { return g_frames; }
+unsigned long long FrameCount() { return g_frames.load(std::memory_order_relaxed); }
+
+void ActivateAction(tas::Action action) {
+    switch (action) {
+        case tas::Action::PauseResume: {
+            if (!g_original_world_tick) return;
+            bool previous = g_paused.load(std::memory_order_relaxed);
+            while (!g_paused.compare_exchange_weak(previous, !previous,
+                                                   std::memory_order_relaxed)) {}
+            const bool paused = !previous;
+            g_steps_requested.store(0, std::memory_order_relaxed);
+            SC_LOG("tas: %s", paused ? "paused" : "resumed");
+            break;
+        }
+        case tas::Action::FrameAdvance:
+            if (g_paused.load(std::memory_order_relaxed) && g_original_world_tick) {
+                const int count = tas::GetSettings().frames_per_step;
+                int pending = g_steps_requested.load(std::memory_order_relaxed);
+                while (!g_steps_requested.compare_exchange_weak(
+                    pending, pending + count, std::memory_order_relaxed)) {}
+            }
+            break;
+        case tas::Action::SpeedHalf:
+        case tas::Action::SpeedFifth:
+        case tas::Action::SpeedTenth: {
+            const int index = static_cast<int>(action) - static_cast<int>(tas::Action::SpeedHalf);
+            const float requested = tas::GetSettings().speeds[index];
+            const float current = g_tas_multiplier.load(std::memory_order_relaxed);
+            const float next = std::fabs(current - requested) < 0.001f ? 1.f : requested;
+            g_tas_multiplier.store(next, std::memory_order_relaxed);
+            SC_LOG("tas: multiplier selected %s (%.3fx)", PresetName(next), next);
+            break;
+        }
+        case tas::Action::ToggleGui:
+            ui::ToggleMenu();
+            break;
+        case tas::Action::SaveCheckpoint:
+        case tas::Action::LoadCheckpoint:
+        case tas::Action::Count:
+            break;
+    }
+}
+
+float PlaybackSpeed() { return g_tas_multiplier.load(std::memory_order_relaxed); }
+
+void SetPlaybackSpeed(float speed) {
+    if (!std::isfinite(speed) || speed < 0.01f || speed > 4.f) return;
+    g_tas_multiplier.store(speed, std::memory_order_relaxed);
+    SC_LOG("tas: playback speed set to %.3fx", speed);
+}
+
+bool IsPaused() { return g_paused.load(std::memory_order_relaxed); }
 
 }

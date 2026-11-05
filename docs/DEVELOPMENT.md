@@ -15,14 +15,15 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Immediate milestones
 
-1. **Diagnose apparent acceleration** on Windows using game-thread samples of stored dilation components, setter caller RVAs, actor custom dilation, tick delta, and world-time progression relative to real time. First collect a sustained 1× baseline; do not clamp or reset values until the changing source is identified.
-2. **Validate slowdown** on a training encounter. Distinguish global time dilation from renderer/audio/UI clocks.
+1. **Validate the dedicated SifuTAS GUI and settings**: confirm it stays invisible while closed, is usable with mouse/keyboard while open, remains responsive while paused, and restores normal gameplay input on close. Verify configurable shortcuts/speeds/step count persist and collisions are rejected.
+2. **Validate slowdown** on a training encounter. Distinguish global time dilation from renderer/audio/UI clocks. The recent extended diagnostic session did not reproduce acceleration; its late samples show world time stopped advancing and need a new baseline during active play.
 3. **Validate pause and frame advance**: the engine continues rendering and accepts hotkeys, no catastrophic hangs, no drift/jump when resuming. Check whether input events are buffered during pause and whether multiple worlds tick.
-4. **Remove co-op runtime dependencies** once Phase 1 works. Keep the proxy, reflection, tick hooks, PDB tools, ImGui and logging; replace the co-op menu with TAS controls.
-5. **Capture and inject inputs** at the relevant controller/input processing boundary, preserving press/release edges and analog axes.
-6. **Recording/editing**: frame-indexed input timeline, replay from repeatable encounter starts, per-frame state checksum and divergence reporting.
-7. **Checkpoint v1**: in the training room, save the player and one enemy only from a paused, idle state. Track stable actor identity within the current world and capture root transform, velocity, health, structure/guard, actor time dilation, down state, movement mode, and current montage/time. Restore the same actors by validated pointers or stable gameplay ID, using engine setters for transform/vitals where possible; then resume their AI only after their restored baseline has been checked.
-8. **Active-fight savestates**: later reverse engineer behavior-tree/AI state, queued attacks and callbacks, montage/root-motion state, movement and physics, timers, and random streams. Do not treat actor transforms and vitals as a complete arbitrary-frame snapshot.
+4. **Capture and inject inputs** at the relevant controller/input processing boundary, preserving press/release edges and analog axes.
+5. **Recording/editing**: frame-indexed input timeline, replay from repeatable encounter starts, per-frame state checksum and divergence reporting.
+6. **Checkpoint v1**: in the training room, save the player and one enemy only from a paused, idle state. Track stable actor identity within the current world and capture root transform, velocity, health, structure/guard, actor time dilation, down state, movement mode, and current montage/time. Restore the same actors by validated pointers or stable gameplay ID, using engine setters for transform/vitals where possible; then resume their AI only after their restored baseline has been checked.
+7. **Active-fight savestates**: later reverse engineer behavior-tree/AI state, queued attacks and callbacks, montage/root-motion state, movement and physics, timers, and random streams. Do not treat actor transforms and vitals as a complete arbitrary-frame snapshot.
+
+`src/tas/state_reference.h` defines the small identity portion for a future checkpoint: level path, player/enemy identities, engine tick, optional verified simulation frame, and recording branch ID. It contains no capture or restore behavior.
 
 ## Checkpoint v1 strategy
 

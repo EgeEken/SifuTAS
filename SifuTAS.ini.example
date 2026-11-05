@@ -1,0 +1,14 @@
+[tas]
+; Each binding is a Windows virtual key code and modifier mask: Ctrl=1, Alt=2, Shift=4.
+binding_0=112,0
+binding_1=113,0
+binding_2=114,0
+binding_3=115,0
+binding_4=116,0
+binding_5=117,0
+binding_6=118,0
+binding_7=119,0
+speed_1=0.5
+speed_2=0.2
+speed_3=0.1
+frames_per_step=1
