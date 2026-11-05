@@ -8,10 +8,10 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 - `src/dllmain.cpp`: SifuCoop-derived `dsound.dll` bootstrapping and executable fingerprint safeguards.
 - `src/proxy/dsound_proxy.cpp`: native Windows proxy loading.
-- `src/core/hooks.cpp`: `UGameEngine::Tick` vtable hook; new TAS key processing and optional `UWorld::Tick` MinHook.
+- `src/core/hooks.cpp`: `UGameEngine::Tick` vtable hook, `AWorldSettings::GetEffectiveTimeDilation` multiplier hook, focused TAS hotkeys and `UWorld::Tick` pause/step hook.
 - `src/ue/reflection.{h,cpp}`: Unreal object lookup, reflected calls and console command dispatch.
 - `tools/pdbdump/pdbdump.py`: resolves function RVAs and field offsets from a matching Sifu PDB; regenerates `src/core/offsets.g.h` and local build fingerprints.
-- `src/ui/d3d_overlay.cpp`: SifuCoop's ImGui/Direct3D 11 overlay, presently still showing co-op controls.
+- `src/ui/d3d_overlay.cpp`: retained SifuCoop ImGui/Direct3D 11 overlay code for a future TAS interface; overlay initialization is disabled.
 
 ## Immediate milestones
 
@@ -26,10 +26,10 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Known risks
 
-`UWorld::Tick` suppression is an **experiment**, not authoritative engine pausing; other engine timing, animation and input paths may continue. Passing a fixed 1/60 delta to `UWorld::Tick` does not fix the complete engine timestep. `F8` can currently advance a game-world tick without delivering the intended gameplay input. Engine tick hooks may be build-specific or unstable. The prototype does not support deterministic playback or any savestate.
+`UWorld::Tick` suppression is an **experiment**, not authoritative engine pausing; other engine timing, animation and input paths may continue. Passing a fixed 1/60 delta to `UWorld::Tick` does not fix the complete engine timestep. `F2` can currently advance a game-world tick without delivering the intended gameplay input. Engine tick hooks may be build-specific or unstable. The prototype does not support deterministic playback or any savestate.
 
 The current source still initializes original SifuCoop co-op/network infrastructure. Use `[net] mode=off` and do not attempt multiplayer testing. Decouple the code only after the hook experiments are understood, to minimize simultaneous causes of breakage.
 
 ## Engineering principles
 
-Keep `main` release-only; all experimentation occurs on `testing`. No commits or pushes without user approval. Retain upstream MIT and third-party licenses. No proprietary Sifu files in git. Add simple test instrumentation and actionable log lines before speculative refactoring.
+Keep `main` release-only; all experimentation occurs on `testing`. Commit and push completed development passes to `testing`, and report each commit SHA. Never modify or merge into `main` without explicit authorization. Do not deploy or replace an installed DLL without approval. Retain upstream MIT and third-party licenses. No proprietary Sifu files in git. Add simple test instrumentation and actionable log lines before speculative refactoring.

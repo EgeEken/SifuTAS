@@ -58,6 +58,9 @@ WANTED = {
         "?RequestDirectMove@UCharacterMovementComponent@@UEAAXAEBUFVector@@_N@Z"
     ],
     "AActor_K2_DestroyActor": ["?K2_DestroyActor@AActor@@"],
+    "AWorldSettings_GetEffectiveTimeDilation": [
+        "?GetEffectiveTimeDilation@AWorldSettings@@UEBAMXZ"
+    ],
     "UEngine_GetWorldFromContextObject": ["?GetWorldFromContextObject@UEngine@@"],
     "GEngine": ["?GEngine@@"],
     "GWorld": ["?GWorld@@"],

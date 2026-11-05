@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <cmath>
+
 #include "../../third_party/minhook/include/MinHook.h"
 
 #include "../game/enemies.h"
@@ -24,87 +26,114 @@ namespace ue = sifucoop::ue;
 
 using TickFn = void(__fastcall*)(void*, float, bool);
 using WorldTickFn = void(__fastcall*)(void*, int, float);
+using EffectiveTimeDilationFn = float(__fastcall*)(void*);
 
-enum class TASMode { Normal, Slow, Paused };
+constexpr float kSpeedPresets[] = {0.5f, 0.2f, 0.1f};
+constexpr float kFrameStepSeconds = 1.f / 60.f;
 
-TASMode g_mode = TASMode::Normal;
-TASMode g_resume_mode = TASMode::Normal;
+float g_tas_multiplier = 1.f;
+bool g_paused = false;
 WorldTickFn g_original_world_tick = nullptr;
+EffectiveTimeDilationFn g_original_effective_time_dilation = nullptr;
 void* g_world_tick_target = nullptr;
+void* g_effective_time_dilation_target = nullptr;
 bool g_step_requested = false;
+bool g_step_in_progress = false;
 unsigned long long g_steps = 0;
+float g_last_logged_game_scale = -1.f;
+float g_last_logged_tas_multiplier = -1.f;
+float g_last_logged_effective_scale = -1.f;
+ULONGLONG g_last_time_scale_log_ms = 0;
 
-bool Pressed(int key) {
-    static bool previous[4] = {};
-    const int index = key - VK_F6;
+bool GameFocused() {
+    HWND foreground = GetForegroundWindow();
+    DWORD process_id = 0;
+    if (!foreground) return false;
+    GetWindowThreadProcessId(foreground, &process_id);
+    return process_id == GetCurrentProcessId();
+}
+
+bool Pressed(int key, bool focused) {
+    static bool previous[5] = {};
+    const int index = key - VK_F1;
+    if (index < 0 || index >= 5) return false;
     const bool down = (GetAsyncKeyState(key) & 0x8000) != 0;
     const bool pressed = down && !previous[index];
     previous[index] = down;
-    return pressed;
+    return focused && pressed;
 }
 
-void SetSpeed(float speed) {
-    ue::UObject* world = ue::GetWorld();
-    ue::UObject* gameplay_statics =
-        ue::FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");
-    if (!world || !gameplay_statics) return;
+void LogTimeScale(float game_scale, float tas_multiplier, float effective_scale) {
+    const ULONGLONG now = GetTickCount64();
+    const bool changed =
+        std::fabs(game_scale - g_last_logged_game_scale) > 0.01f ||
+        std::fabs(tas_multiplier - g_last_logged_tas_multiplier) > 0.001f ||
+        std::fabs(effective_scale - g_last_logged_effective_scale) > 0.01f;
+    if (!changed || (g_last_time_scale_log_ms && now - g_last_time_scale_log_ms < 250))
+        return;
 
-    struct Params {
-        ue::UObject* WorldContextObject;
-        float TimeDilation;
-    } params = {world, speed};
+    SC_LOG("tas: time scale game=%.3f multiplier=%.1f effective=%.3f", game_scale,
+           tas_multiplier, effective_scale);
+    g_last_logged_game_scale = game_scale;
+    g_last_logged_tas_multiplier = tas_multiplier;
+    g_last_logged_effective_scale = effective_scale;
+    g_last_time_scale_log_ms = now;
+}
 
-    if (!ue::CallFunction(gameplay_statics, L"SetGlobalTimeDilation", &params))
-        SC_LOG("tas: SetGlobalTimeDilation failed");
+float __fastcall EffectiveTimeDilationHook(void* self) {
+    const float game_scale = g_original_effective_time_dilation(self);
+    const float tas_multiplier = g_step_in_progress ? 1.f : g_tas_multiplier;
+    const float effective_scale = game_scale * tas_multiplier;
+    if (!g_step_in_progress)
+        LogTimeScale(game_scale, tas_multiplier, effective_scale);
+    return effective_scale;
 }
 
 void PollTASKeys() {
-    const bool slow = Pressed(VK_F6);
-    const bool pause = Pressed(VK_F7);
-    const bool step = Pressed(VK_F8);
-    const bool normal = Pressed(VK_F9);
+    const bool focused = GameFocused();
+    const bool pause = Pressed(VK_F1, focused);
+    const bool step = Pressed(VK_F2, focused);
+    const bool half = Pressed(VK_F3, focused);
+    const bool fifth = Pressed(VK_F4, focused);
+    const bool tenth = Pressed(VK_F5, focused);
 
-    if (normal) {
-        g_mode = TASMode::Normal;
-        g_resume_mode = TASMode::Normal;
-        g_step_requested = false;
-        SetSpeed(1.f);
-        SC_LOG("tas: normal speed");
-    } else if (slow) {
-        if (g_mode == TASMode::Paused) {
-            g_resume_mode = g_resume_mode == TASMode::Slow ? TASMode::Normal : TASMode::Slow;
-        } else {
-            g_mode = g_mode == TASMode::Slow ? TASMode::Normal : TASMode::Slow;
-            SetSpeed(g_mode == TASMode::Slow ? 0.2f : 1.f);
-        }
-        SC_LOG("tas: slow mode toggled");
+    if (half) {
+        g_tas_multiplier = std::fabs(g_tas_multiplier - kSpeedPresets[0]) < 0.001f
+                               ? 1.f
+                               : kSpeedPresets[0];
+        SC_LOG("tas: multiplier selected %.1f", g_tas_multiplier);
+    } else if (fifth) {
+        g_tas_multiplier = std::fabs(g_tas_multiplier - kSpeedPresets[1]) < 0.001f
+                               ? 1.f
+                               : kSpeedPresets[1];
+        SC_LOG("tas: multiplier selected %.1f", g_tas_multiplier);
+    } else if (tenth) {
+        g_tas_multiplier = std::fabs(g_tas_multiplier - kSpeedPresets[2]) < 0.001f
+                               ? 1.f
+                               : kSpeedPresets[2];
+        SC_LOG("tas: multiplier selected %.1f", g_tas_multiplier);
     }
 
     if (pause && g_original_world_tick) {
-        if (g_mode == TASMode::Paused) {
-            g_mode = g_resume_mode;
-            SetSpeed(g_mode == TASMode::Slow ? 0.2f : 1.f);
-        } else {
-            g_resume_mode = g_mode;
-            g_mode = TASMode::Paused;
-            SetSpeed(1.f);
-        }
+        g_paused = !g_paused;
         g_step_requested = false;
-        SC_LOG("tas: %s", g_mode == TASMode::Paused ? "paused" : "resumed");
+        SC_LOG("tas: %s", g_paused ? "paused" : "resumed");
     }
 
-    if (step && g_mode == TASMode::Paused) g_step_requested = true;
+    if (step && g_paused && g_original_world_tick) g_step_requested = true;
 }
 
 void __fastcall WorldTickHook(void* self, int tick_type, float delta_seconds) {
-    if (g_mode != TASMode::Paused || self != ue::GetWorld()) {
+    if (!g_paused || self != ue::GetWorld()) {
         g_original_world_tick(self, tick_type, delta_seconds);
         return;
     }
 
     if (!g_step_requested) return;
     g_step_requested = false;
-    g_original_world_tick(self, tick_type, 1.f / 60.f);
+    g_step_in_progress = true;
+    g_original_world_tick(self, tick_type, kFrameStepSeconds);
+    g_step_in_progress = false;
     ++g_steps;
     SC_LOG("tas: step %llu", g_steps);
 }
@@ -212,10 +241,12 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
     g_vtable = vtable;
     SC_LOG("hook: installed (original at %p)", reinterpret_cast<void*>(g_original_tick));
 
-    if (!offsets::UWorld_Tick) {
-        SC_LOG("tas: UWorld::Tick symbol missing; only slowdown available");
+    if (!offsets::AWorldSettings_GetEffectiveTimeDilation)
+        SC_LOG("tas: GetEffectiveTimeDilation symbol missing; speed presets unavailable");
+    if (!offsets::UWorld_Tick)
+        SC_LOG("tas: UWorld::Tick symbol missing; pause and frame step unavailable");
+    if (!offsets::AWorldSettings_GetEffectiveTimeDilation && !offsets::UWorld_Tick)
         return true;
-    }
 
     const MH_STATUS init = MH_Initialize();
     if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
@@ -223,22 +254,50 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
         return true;
     }
 
-    g_world_tick_target = reinterpret_cast<void*>(base + offsets::UWorld_Tick);
-    MH_STATUS status = MH_CreateHook(g_world_tick_target, reinterpret_cast<void*>(&WorldTickHook),
-                                     reinterpret_cast<void**>(&g_original_world_tick));
-    if (status == MH_OK) status = MH_EnableHook(g_world_tick_target);
-    if (status != MH_OK) {
-        SC_LOG("tas: world tick hook failed (%d)", static_cast<int>(status));
-        MH_RemoveHook(g_world_tick_target);
-        g_original_world_tick = nullptr;
-        g_world_tick_target = nullptr;
-    } else {
-        SC_LOG("tas: world tick hooked; F6 slow, F7 pause, F8 step, F9 normal");
+    if (offsets::AWorldSettings_GetEffectiveTimeDilation) {
+        g_effective_time_dilation_target =
+            reinterpret_cast<void*>(base + offsets::AWorldSettings_GetEffectiveTimeDilation);
+        MH_STATUS status = MH_CreateHook(
+            g_effective_time_dilation_target,
+            reinterpret_cast<void*>(&EffectiveTimeDilationHook),
+            reinterpret_cast<void**>(&g_original_effective_time_dilation));
+        if (status == MH_OK) status = MH_EnableHook(g_effective_time_dilation_target);
+        if (status != MH_OK) {
+            SC_LOG("tas: effective time dilation hook failed (%d)",
+                   static_cast<int>(status));
+            MH_RemoveHook(g_effective_time_dilation_target);
+            g_original_effective_time_dilation = nullptr;
+            g_effective_time_dilation_target = nullptr;
+        } else {
+            SC_LOG("tas: effective time dilation hooked; F3 0.5x, F4 0.2x, F5 0.1x");
+        }
+    }
+
+    if (offsets::UWorld_Tick) {
+        g_world_tick_target = reinterpret_cast<void*>(base + offsets::UWorld_Tick);
+        MH_STATUS status = MH_CreateHook(g_world_tick_target,
+                                         reinterpret_cast<void*>(&WorldTickHook),
+                                         reinterpret_cast<void**>(&g_original_world_tick));
+        if (status == MH_OK) status = MH_EnableHook(g_world_tick_target);
+        if (status != MH_OK) {
+            SC_LOG("tas: world tick hook failed (%d)", static_cast<int>(status));
+            MH_RemoveHook(g_world_tick_target);
+            g_original_world_tick = nullptr;
+            g_world_tick_target = nullptr;
+        } else {
+            SC_LOG("tas: world tick hooked; F1 pause, F2 step");
+        }
     }
     return true;
 }
 
 void RemoveTickHook() {
+    if (g_effective_time_dilation_target) {
+        MH_DisableHook(g_effective_time_dilation_target);
+        MH_RemoveHook(g_effective_time_dilation_target);
+        g_effective_time_dilation_target = nullptr;
+        g_original_effective_time_dilation = nullptr;
+    }
     if (g_world_tick_target) {
         MH_DisableHook(g_world_tick_target);
         MH_RemoveHook(g_world_tick_target);

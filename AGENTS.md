@@ -1,7 +1,10 @@
 # Agent instructions: SifuTAS
 
 - Work on `testing` only. Never modify `main`, open a release, merge a branch, or create a tag without explicit user permission.
-- Do not commit or push changes without explicit user permission. Keep local changes uncommitted until reviewed.
+- Commit and push each completed, reviewed development pass to `testing`.
+- Never modify or merge into `main` without explicit user authorization.
+- Report the commit SHA after each completed pass.
+- Do not deploy or replace an installed DLL without explicit user approval.
 - Scope: native single-player Sifu TAS tooling for choreographed combat videos. Prioritize usable slowdown and frame advance, then input recording/injection, editable playback, checkpoints, deterministic replay, and savestates.
 - `src/core/hooks.cpp` currently contains uncompiled, untested phase-one hooks. Do not claim they work until they compile and have been tested in-game.
 - Reuse imported SifuCoop code (native DLL/proxy, Unreal reflection, symbol generator, overlay, build guards). Prefer focused changes and keep upstream origin/license notices intact.

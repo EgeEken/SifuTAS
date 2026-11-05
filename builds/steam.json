@@ -24,6 +24,7 @@
     "ASCCharacterImpostor_BPE_MimicCharacter": 11144544,
     "ASCCharacterImpostor_StaticClass": 11134432,
     "ASCPlayerController_BeginPlay": 25562336,
+    "AWorldSettings_GetEffectiveTimeDilation": 11365072,
     "DelayedActionAttack_ToString": 25873072,
     "FAIAttackHandler_PrepareNextAttack": 23947312,
     "FComboTransitions_GeNextAttackID": 24744960,
@@ -104,7 +105,8 @@
     "UTargetableWidgetUpdaterComponent_BeginPlay": 25311920,
     "UWidgetPoolComponent_BeginPlay": 27269792,
     "UWorld_SpawnActor": 54649568,
-    "UWorld_SpawnActor_VecRot": 54652448
+    "UWorld_SpawnActor_VecRot": 54652448,
+    "UWorld_Tick": 54655088
   },
   "size_of_image": 103370752,
   "time_date_stamp": 1749064368

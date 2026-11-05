@@ -15,7 +15,6 @@
 #include "net/instance_guard.h"
 #include "net/protocol.h"
 #include "net/session.h"
-#include "ui/overlay.h"
 #include "core/offsets.g.h"
 #include "ue/reflection.h"
 
@@ -271,20 +270,14 @@ DWORD WINAPI Bootstrap(LPVOID) {
     sifucoop::game::InitSelfTest();
     sifucoop::game::InitReplayProbe();
 
-    bool in_game = false;
-    if (sifucoop::coop::Get().in_game_overlay) {
-        in_game = sifucoop::ui::StartInGameOverlay();
-    } else {
-        SC_LOG("d3d: in-game overlay disabled by config -- using the window overlay");
-    }
-    if (!in_game) sifucoop::ui::StartOverlay();
+    SC_LOG("ui: inherited multiplayer overlays disabled; TAS hotkeys only");
 
     if (!sifucoop::hooks::InstallTickHook(base, engine)) {
         SC_LOG("bootstrap: tick hook not installed -- mod is inert");
         return 0;
     }
 
-    SC_LOG("bootstrap: armed -- press F1 in game for the menu");
+    SC_LOG("bootstrap: armed -- F1 pause, F2 step, F3 0.5x, F4 0.2x, F5 0.1x");
     return 0;
 }
 

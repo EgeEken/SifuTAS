@@ -10,10 +10,13 @@ The `testing` branch is the development branch. **Do not install from `main` or 
 
 | Key | Intended action | Status |
 | --- | --- | --- |
-| F6 | Toggle 0.2× gameplay speed | Implemented, untested |
-| F7 | Pause/resume world simulation | Implemented, untested |
-| F8 | Step one `UWorld::Tick` at 1/60 s while paused | Implemented, untested |
-| F9 | Restore normal speed/unpause | Implemented, untested |
+| F1 | Pause/resume world simulation | Works in the previous build; new binding pending retest |
+| F2 | Step one UWorld::Tick at 1/60 s while paused | Works in the previous build; new binding pending retest |
+| F3 | Toggle 0.5× playback speed | Built; pending in-game test |
+| F4 | Toggle 0.2× playback speed | Built; pending in-game test |
+| F5 | Toggle 0.1× playback speed | Built; pending in-game test |
+
+Speed presets multiply Sifu's effective world time dilation. A frame step temporarily bypasses the TAS multiplier so it advances the same 1/60 s world tick at every selected preset.
 
 Frame stepping does **not** yet guarantee that input is sampled once, all subsystems are paused, or animation/physics are synchronized. It is not deterministic replay. There is **no input recorder, input editor, checkpoint system or savestate implementation**.
 

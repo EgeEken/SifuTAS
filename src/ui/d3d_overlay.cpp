@@ -89,7 +89,6 @@ bool InitialiseFrom(IDXGISwapChain* swap_chain) {
     io.LogFilename = nullptr;
 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.MouseDrawCursor = true;
     ImGui::StyleColorsDark();
 
     if (!ImGui_ImplWin32_Init(g_window) || !ImGui_ImplDX11_Init(g_device, g_context)) {
@@ -546,22 +545,6 @@ LRESULT CALLBACK WndProcHook(HWND window, UINT message, WPARAM wparam, LPARAM lp
     return CallWindowProcW(g_original_wndproc, window, message, wparam, lparam);
 }
 
-using SetCursorPosFn = BOOL(WINAPI*)(int, int);
-using ClipCursorFn = BOOL(WINAPI*)(const RECT*);
-
-SetCursorPosFn g_original_set_cursor_pos = nullptr;
-ClipCursorFn g_original_clip_cursor = nullptr;
-
-BOOL WINAPI SetCursorPosHook(int x, int y) {
-    if (g_menu_open) return TRUE;
-    return g_original_set_cursor_pos(x, y);
-}
-
-BOOL WINAPI ClipCursorHook(const RECT* rect) {
-    if (g_menu_open) return g_original_clip_cursor(nullptr);
-    return g_original_clip_cursor(rect);
-}
-
 void FeedMenuInput() {
     ImGuiIO& io = ImGui::GetIO();
     if (GetForegroundWindow() != g_window) {
@@ -720,20 +703,6 @@ bool StartInGameOverlay() {
                       reinterpret_cast<void**>(&g_original_resize_buffers)) == MH_OK &&
         MH_EnableHook(resize_buffers) == MH_OK) {
         SC_LOG("d3d: Present + ResizeBuffers hooked");
-
-        if (MH_CreateHook(reinterpret_cast<void*>(&SetCursorPos),
-                          reinterpret_cast<void*>(&SetCursorPosHook),
-                          reinterpret_cast<void**>(&g_original_set_cursor_pos)) == MH_OK &&
-            MH_EnableHook(reinterpret_cast<void*>(&SetCursorPos)) == MH_OK) {
-            SC_LOG("d3d: cursor recentring suppressed while the menu is open");
-        } else {
-            SC_LOG("d3d: SetCursorPos hook FAILED -- the menu may not be clickable");
-        }
-        if (MH_CreateHook(reinterpret_cast<void*>(&ClipCursor),
-                          reinterpret_cast<void*>(&ClipCursorHook),
-                          reinterpret_cast<void**>(&g_original_clip_cursor)) == MH_OK) {
-            MH_EnableHook(reinterpret_cast<void*>(&ClipCursor));
-        }
     } else {
         SC_LOG("d3d: ResizeBuffers hook FAILED -- disabling overlay, a fullscreen "
                "switch would crash the game");
