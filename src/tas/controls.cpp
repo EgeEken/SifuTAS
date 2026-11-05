@@ -91,6 +91,8 @@ bool SaveLocked() {
     }
     _snprintf_s(text, sizeof(text), _TRUNCATE, "%d", g_settings.frames_per_step);
     saved = WritePrivateProfileStringA("tas", "frames_per_step", text, path) != FALSE && saved;
+    _snprintf_s(text, sizeof(text), _TRUNCATE, "%.3f", g_settings.gui_scale);
+    saved = WritePrivateProfileStringA("tas", "gui_scale", text, path) != FALSE && saved;
     g_settings_saved.store(saved, std::memory_order_relaxed);
     if (!saved && !g_save_error_logged) {
         SC_LOG("tas: couldn't save SifuTAS.ini beside the mod (Windows error %lu)",
@@ -153,6 +155,12 @@ void LoadSettings() {
         }
         const int frames = GetPrivateProfileIntA("tas", "frames_per_step", 1, path);
         if (frames >= 1 && frames <= 10) g_settings.frames_per_step = frames;
+        GetPrivateProfileStringA("tas", "gui_scale", "", value, sizeof(value), path);
+        char* scale_end = nullptr;
+        const float gui_scale = strtof(value, &scale_end);
+        if (scale_end != value && std::isfinite(gui_scale) &&
+            gui_scale >= 0.8f && gui_scale <= 2.f)
+            g_settings.gui_scale = gui_scale;
     }
     SaveLocked();
     ReleaseSRWLockExclusive(&g_settings_lock);
@@ -193,6 +201,14 @@ bool SetFramesPerStep(int frames) {
     if (frames < 1 || frames > 10) return false;
     AcquireSRWLockExclusive(&g_settings_lock);
     g_settings.frames_per_step = frames;
+    ReleaseSRWLockExclusive(&g_settings_lock);
+    return true;
+}
+
+bool SetGuiScale(float scale) {
+    if (!std::isfinite(scale) || scale < 0.8f || scale > 2.f) return false;
+    AcquireSRWLockExclusive(&g_settings_lock);
+    g_settings.gui_scale = scale;
     ReleaseSRWLockExclusive(&g_settings_lock);
     return true;
 }

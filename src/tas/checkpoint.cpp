@@ -86,11 +86,6 @@ void SetResult(const char* operation, const char* message) {
     SC_LOG("tas: checkpoint %s: %s", operation, message);
 }
 
-bool IsTrainingRoom(char* level, int size) {
-    if (!ue::GetCurrentLevelPath(level, size)) return false;
-    return strstr(level, "TrainingRoom") != nullptr;
-}
-
 bool CaptureActor(ue::UObject* actor, ActorState* out, const char** error) {
     if (!ue::IsAliveObject(actor)) {
         *error = "actor is not a valid live world actor";
@@ -174,12 +169,18 @@ bool FindNearestEnemy(ue::UObject* player, ue::UObject** actor_out,
                       std::uint32_t* hash_out, const char** error) {
     game::EnemyRow rows[64] = {};
     const int count = game::GetEnemyRows(rows, 64);
+    int active_count = 0;
+    int living_count = 0;
+    int nearby_count = 0;
     float nearest = kMaxEnemyDistance;
     for (int i = 0; i < count; ++i) {
         const game::EnemyRow& row = rows[i];
-        if (!row.active || row.down || row.health <= 0.5f || row.distance < 0.f ||
-            row.distance >= nearest || row.hash == 0)
-            continue;
+        if (!row.active) continue;
+        ++active_count;
+        if (row.down || row.health <= 0.5f) continue;
+        ++living_count;
+        if (row.distance >= 0.f && row.distance < kMaxEnemyDistance) ++nearby_count;
+        if (row.distance < 0.f || row.distance >= nearest || row.hash == 0) continue;
         ue::UObject* enemy = game::FindEnemyByHash(row.hash);
         if (!enemy || enemy == player || !ue::IsAliveObject(enemy)) continue;
         nearest = row.distance;
@@ -187,11 +188,24 @@ bool FindNearestEnemy(ue::UObject* player, ue::UObject** actor_out,
         *hash_out = row.hash;
     }
     if (*actor_out) return true;
-    *error = "no nearby active enemy is tracked in this world";
+    if (count == 0)
+        *error = "enemy tracker found no FightingCharacter actors in this world";
+    else if (active_count == 0)
+        *error = "enemy tracker found no active, non-pooled opponents";
+    else if (living_count == 0)
+        *error = "tracked active opponents are all down or have no health";
+    else if (nearby_count == 0)
+        *error = "no living tracked opponent is within 1500 units of the player";
+    else
+        *error = "nearby opponent could not be resolved as a live actor";
+    SC_LOG("tas: checkpoint enemy search tracked=%d active=%d living=%d nearby=%d",
+           count, active_count, living_count, nearby_count);
     return false;
 }
 
-bool Capture(Snapshot* out, const char** error) {
+bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
+    const bool have_level = ue::GetCurrentLevelPath(level, level_size);
+    if (!have_level) lstrcpynA(level, "<unavailable>", level_size);
     if (!hooks::IsPaused()) {
         *error = "pause the simulation before saving (F1)";
         return false;
@@ -200,14 +214,13 @@ bool Capture(Snapshot* out, const char** error) {
         *error = "combat component access is not ready";
         return false;
     }
+    if (!have_level) {
+        *error = "current world level identity could not be read";
+        return false;
+    }
     ue::UObject* world = ue::GetWorld();
     if (!ue::IsAliveObject(world)) {
         *error = "current world is unavailable";
-        return false;
-    }
-    char level[512] = {};
-    if (!IsTrainingRoom(level, sizeof(level))) {
-        *error = "checkpoint v1 only supports the training room";
         return false;
     }
     ue::UObject* player = ue::GetPlayerCharacter(world, 0);
@@ -226,7 +239,7 @@ bool Capture(Snapshot* out, const char** error) {
     snapshot.enemy_hash = enemy_hash;
     if (!CopyString(snapshot.reference.level_path,
                     sizeof(snapshot.reference.level_path), level)) {
-        *error = "training-room level identity is too long";
+        *error = "current level identity is too long for the checkpoint slot";
         return false;
     }
     if (!CaptureActor(player, &snapshot.player_state, error) ||
@@ -391,8 +404,10 @@ bool VerifyDilation(ue::UObject* actor, const ActorState& state) {
 
 void SaveCheckpoint() {
     Snapshot snapshot = {};
+    char level[512] = {};
     const char* error = "unknown validation failure";
-    if (!Capture(&snapshot, &error)) {
+    if (!Capture(&snapshot, level, sizeof(level), &error)) {
+        SC_LOG("tas: checkpoint save rejected level='%s'", level);
         SetResult("save refused", error);
         return;
     }

@@ -11,12 +11,12 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 - `src/core/hooks.cpp`: `UGameEngine::Tick` vtable hook, `AWorldSettings::GetEffectiveTimeDilation` multiplier hook, focused TAS hotkeys and `UWorld::Tick` pause/step hook.
 - `src/ue/reflection.{h,cpp}`: Unreal object lookup, reflected calls and console command dispatch.
 - `tools/pdbdump/pdbdump.py`: resolves function RVAs and field offsets from a matching Sifu PDB; regenerates `src/core/offsets.g.h` and local build fingerprints.
-- `src/ui/d3d_overlay.cpp`: retained SifuCoop ImGui/Direct3D 11 overlay code for a future TAS interface; overlay initialization is disabled.
+- `src/ui/d3d_overlay.cpp`: retained SifuCoop ImGui/Direct3D 11 integration hosting the dedicated TAS interface; the inherited multiplayer menu remains disabled.
 
 ## Immediate milestones
 
-1. **Validate checkpoint v1 in-game**: use the training room and one enemy; verify supported fields restore and observe the enemy's AI after resuming. The build is compiled but not yet installed or tested in-game.
-2. **Validate the dedicated SifuTAS GUI and settings**: this pass was reported working in-game. Recheck only if checkpoint integration causes a regression.
+1. **Validate this pass in-game**: test Free Training checkpoint save/load, GUI text scaling, pause-on-open/manual pause handling, and the continuous playback speed slider. The code is built but awaits installation and testing.
+2. **Validate the dedicated SifuTAS GUI and settings**: mouse handling, tab behavior, configurable controls and settings persistence were previously reported working. Recheck for regressions from scaling and slider changes.
 3. **Validate slowdown** on a training encounter. The recent extended diagnostic session did not reproduce acceleration; its late samples show world time stopped advancing and need a new baseline during active play.
 4. **Validate pause and frame advance**: the user reports these work. Check for input buffering or multi-world tick differences if later changes affect them.
 5. **Capture and inject inputs** at the relevant controller/input processing boundary, preserving press/release edges and analog axes.
@@ -27,7 +27,9 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Checkpoint v1 limits
 
-Checkpoint v1 now implements a direct in-memory snapshot of a paused training-room encounter. It requires the same world and tracked actor instances, alive/standing actors, low velocity, and no active montage. It restores transforms, velocity through the existing movement/root velocity helper, max/current health, guard, and custom time dilation, with readback verification. Empty saved montages are handled by stopping any currently active montage and verifying it cleared. F7/F8 requests are processed from the game-thread frame hook; the Savestates GUI only queues requests. Successful loads remain paused.
+Checkpoint v1 implements a direct in-memory snapshot of a paused encounter. The first in-game Free Training save was rejected by a level-name restriction because Sifu's actual Free Training level identity was not verified. No reliable Free Training mode API is known in the current source, so the map-name gate has been removed; the slot still records level identity and refuses a load if the world or level changes. Save requires the same world and tracked actor instances, alive/standing actors, low velocity, and no active montage. The existing enemy tracker enumerates all current-world `AFightingCharacter` actors and marks non-pooled actors active. This pass logs actual level identity on save rejection and tracker counts when no enemy qualifies.
+
+The snapshot restores transforms, velocity through the existing movement/root velocity helper, max/current health, guard, and custom time dilation, with readback verification. Empty saved montages are handled by stopping any currently active montage and verifying it cleared. F7/F8 requests are processed from the game-thread frame hook; the Savestates GUI only queues requests. Successful loads remain paused.
 
 Identity validation uses the current level path and world pointer, current player pointer, enemy roster/hash and pointer, engine UObject validity, Unreal `IsValid`, object path, and class path. A changed world, level, player, or enemy invalidates the slot. The nearest active tracked enemy within the configured proximity gate is selected at save time.
 

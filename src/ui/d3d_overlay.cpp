@@ -38,8 +38,21 @@ bool g_failed = false;
 std::atomic<bool> g_menu_open{false};
 std::atomic<int> g_rebind_action{-1};
 std::atomic<int> g_settings_status{0};
+ImGuiStyle g_base_style = {};
+float g_applied_scale = -1.f;
+bool g_scale_changed = false;
 
 LRESULT CALLBACK WndProcHook(HWND, UINT, WPARAM, LPARAM);
+
+void ApplyGuiScale() {
+    const float scale = tas::GetSettings().gui_scale;
+    if (std::fabs(scale - g_applied_scale) < 0.001f) return;
+    ImGui::GetStyle() = g_base_style;
+    ImGui::GetStyle().ScaleAllSizes(scale);
+    ImGui::GetIO().FontGlobalScale = scale;
+    g_applied_scale = scale;
+    g_scale_changed = true;
+}
 
 bool CreateRenderTarget(IDXGISwapChain* swap_chain) {
     ID3D11Texture2D* back_buffer = nullptr;
@@ -74,10 +87,12 @@ bool InitialiseFrom(IDXGISwapChain* swap_chain) {
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
+    g_base_style = ImGui::GetStyle();
     if (!ImGui_ImplWin32_Init(g_window) || !ImGui_ImplDX11_Init(g_device, g_context)) {
         SC_LOG("d3d: ImGui backend initialization failed -- TAS GUI unavailable");
         return false;
     }
+    ApplyGuiScale();
     g_original_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WndProcHook)));
     SC_LOG("d3d: SifuTAS GUI ready; F6 opens it, game cursor hooks remain disabled");
@@ -128,26 +143,20 @@ LRESULT CALLBACK WndProcHook(HWND window, UINT message, WPARAM wparam, LPARAM lp
 
 void DrawPlaybackTab() {
     const tas::Settings settings = tas::GetSettings();
-    if (ImGui::Button(hooks::IsPaused() ? "Resume" : "Pause", ImVec2(140, 0)))
+    if (ImGui::Button(hooks::IsPaused() ? "Resume" : "Pause",
+                      ImVec2(150.f * settings.gui_scale, 0)))
         hooks::ActivateAction(tas::Action::PauseResume);
     ImGui::SameLine();
     ImGui::BeginDisabled(!hooks::IsPaused());
-    if (ImGui::Button("Advance", ImVec2(140, 0)))
+    if (ImGui::Button("Advance", ImVec2(150.f * settings.gui_scale, 0)))
         hooks::ActivateAction(tas::Action::FrameAdvance);
     ImGui::EndDisabled();
 
-    ImGui::Text("Playback speed: %.3fx", hooks::PlaybackSpeed());
-    ImGui::TextDisabled("Select a speed; selecting it again toggles back to 1x.");
-    const tas::Action speed_actions[] = {tas::Action::SpeedHalf, tas::Action::SpeedFifth,
-                                         tas::Action::SpeedTenth};
-    for (int i = 0; i < 3; ++i) {
-        char label[48] = {};
-        _snprintf_s(label, sizeof(label), _TRUNCATE, "%.3gx", settings.speeds[i]);
-        if (i) ImGui::SameLine();
-        if (ImGui::Button(label, ImVec2(112, 0))) hooks::ActivateAction(speed_actions[i]);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("1x", ImVec2(72, 0))) hooks::SetPlaybackSpeed(1.f);
+    float speed = hooks::PlaybackSpeed();
+    if (ImGui::SliderFloat("Playback speed", &speed, 0.01f, 4.f, "%.2fx"))
+        hooks::SetPlaybackSpeed(speed);
+    ImGui::Text("Current speed: %.3fx", hooks::PlaybackSpeed());
+    ImGui::TextDisabled("F3-F5 select the configured speed presets.");
 
     ImGui::Spacing();
     int frames = settings.frames_per_step;
@@ -160,13 +169,14 @@ void DrawPlaybackTab() {
 
 void DrawSavestatesTab() {
     const tas::checkpoint::Status status = tas::checkpoint::GetStatus();
-    if (ImGui::Button("Save checkpoint (F7)", ImVec2(210, 0)))
+    const float button_width = 220.f * tas::GetSettings().gui_scale;
+    if (ImGui::Button("Save checkpoint (F7)", ImVec2(button_width, 0)))
         hooks::ActivateAction(tas::Action::SaveCheckpoint);
     ImGui::SameLine();
-    if (ImGui::Button("Load checkpoint (F8)", ImVec2(210, 0)))
+    if (ImGui::Button("Load checkpoint (F8)", ImVec2(button_width, 0)))
         hooks::ActivateAction(tas::Action::LoadCheckpoint);
     ImGui::Text("Slot 1: %s", status.exists ? "saved in memory" : "empty");
-    ImGui::TextDisabled("Requires a paused training-room encounter with one tracked, living enemy.");
+    ImGui::TextDisabled("Requires a paused encounter with one tracked, living enemy.");
     ImGui::TextDisabled("Save/load supports quiet, standing actors with no active montage.");
     ImGui::TextDisabled("Movement mode and pending enemy AI actions are not captured.");
     ImGui::Separator();
@@ -200,12 +210,12 @@ void DrawSettingsTab() {
         char shortcut[48] = {};
         tas::BindingText(settings.bindings[i], shortcut, sizeof(shortcut));
         ImGui::TextUnformatted(tas::ActionName(action));
-        ImGui::SameLine(225.f);
+        ImGui::SameLine();
         if (g_rebind_action.load(std::memory_order_relaxed) == i) {
             ImGui::TextDisabled("Press F1-F12 (Esc cancels)");
         } else {
             ImGui::TextDisabled("%s", shortcut);
-            ImGui::SameLine(390.f);
+            ImGui::SameLine();
             char button[32] = {};
             _snprintf_s(button, sizeof(button), _TRUNCATE, "Rebind##%d", i);
             if (ImGui::SmallButton(button)) g_rebind_action.store(i, std::memory_order_relaxed);
@@ -225,6 +235,10 @@ void DrawSettingsTab() {
     if (ImGui::SliderInt("Frames per advance", &frames, 1, 10))
         tas::SetFramesPerStep(frames);
     if (ImGui::IsItemDeactivatedAfterEdit()) tas::SaveSettings();
+    float gui_scale = settings.gui_scale;
+    if (ImGui::SliderFloat("GUI scale", &gui_scale, 0.8f, 2.f, "%.2fx"))
+        tas::SetGuiScale(gui_scale);
+    if (ImGui::IsItemDeactivatedAfterEdit()) tas::SaveSettings();
     if (!tas::SettingsSaved())
         ImGui::TextWrapped("Settings could not be saved beside dsound.dll. Check folder permissions.");
     const int status = g_settings_status.load(std::memory_order_relaxed);
@@ -234,7 +248,14 @@ void DrawSettingsTab() {
 
 void DrawMenu() {
     const tas::Settings settings = tas::GetSettings();
-    ImGui::SetNextWindowSize(ImVec2(680, 500), ImGuiCond_FirstUseEver);
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    float width = 680.f * settings.gui_scale;
+    float height = 500.f * settings.gui_scale;
+    if (display.x > 80.f && width > display.x - 40.f) width = display.x - 40.f;
+    if (display.y > 80.f && height > display.y - 40.f) height = display.y - 40.f;
+    ImGui::SetNextWindowSize(ImVec2(width, height),
+                             g_scale_changed ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+    g_scale_changed = false;
     ImGui::SetNextWindowBgAlpha(0.96f);
     if (!ImGui::Begin("SifuTAS", nullptr, ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
@@ -307,6 +328,7 @@ HRESULT __stdcall PresentHook(IDXGISwapChain* swap_chain, UINT sync_interval, UI
     if (g_initialised && g_render_target) {
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
+        ApplyGuiScale();
         ImGui::GetIO().MouseDrawCursor = g_menu_open.load(std::memory_order_relaxed);
         if (g_menu_open.load(std::memory_order_relaxed)) FeedMenuInput();
         ImGui::NewFrame();

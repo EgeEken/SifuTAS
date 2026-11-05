@@ -4,7 +4,7 @@
 
 Goal: tool-assisted, choreographed combat footage with precise slowdown, frame stepping, and eventually input editing, replay, checkpoints and savestates. This is for creative gameplay videos, **not** verified competitive TAS speedrun files.
 
-The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** Slowdown, pause, frame stepping, gameplay mouse behavior, the dedicated GUI, configurable controls, shortcut rebinding, and settings persistence were tested in-game by the user. Checkpoint v1 is implemented and compiled, but has not yet been installed or tested in-game.
+The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** Slowdown, pause, frame stepping, gameplay mouse behavior, the dedicated GUI, configurable controls, shortcut rebinding, and settings persistence were tested in-game by the user. Checkpoint v1 was tested in Free Training but its save was refused by a `TrainingRoom` path check. That build did not log whether level-path lookup failed or returned a different path; this pass removes the restriction and adds diagnostics. The changes await in-game verification.
 
 ## Current prototype
 
@@ -15,17 +15,17 @@ The `testing` branch is the development branch. **Do not install from `main` or 
 | F3 | Select/toggle speed preset 1 (default 0.5×) | Previously tested working at default values |
 | F4 | Select/toggle speed preset 2 (default 0.2×) | Previously tested working at default values |
 | F5 | Select/toggle speed preset 3 (default 0.1×) | Previously tested working at default values |
-| F6 | Toggle SifuTAS GUI | User tested working |
+| F6 | Toggle SifuTAS GUI and pause on open | GUI tested; automatic pause awaits test |
 | F7 | Save the in-memory checkpoint | Implemented; awaits in-game test |
 | F8 | Load the in-memory checkpoint | Implemented; awaits in-game test |
 
 Mouse capture and camera sensitivity were also reported fixed. Speed presets multiply Sifu's effective world time dilation. A frame step temporarily bypasses the TAS multiplier so it advances the same 1/60 s world tick at every selected preset.
 
-The GUI has Playback, Savestates, Recording, and Settings tabs. The Savestates tab exposes one in-memory checkpoint slot; the Recording tab remains unavailable. The inherited SifuCoop menu and external overlay are not drawn. ImGui cursor drawing is enabled only while the GUI is open; the old cursor positioning and confinement hooks remain disabled.
+The GUI has Playback, Savestates, Recording, and Settings tabs. F6 pauses on open only if gameplay was running; closing resumes only if the user has not changed pause state since opening. Playback uses a continuous 0.01×–4.0× slider; F3–F5 remain configurable presets sharing the same current speed. GUI text, spacing, buttons and initial window dimensions scale together; the scale is saved in `SifuTAS.ini`. The Savestates tab exposes one in-memory checkpoint slot; the Recording tab remains unavailable. The inherited SifuCoop menu and external overlay are not drawn. ImGui cursor drawing is enabled only while the GUI is open; the old cursor positioning and confinement hooks remain disabled.
 
 Bindings, speed multipliers, and frame-step increment are read from and saved to `SifuTAS.ini` alongside `dsound.dll`. If absent, the mod creates it with defaults on startup. Shortcuts support F1–F12, optionally combined with Ctrl, Alt, or Shift; duplicate bindings are rejected. See [SifuTAS.ini.example](SifuTAS.ini.example) for the default values.
 
-The Playback tab's engine tick counter is not a verified simulation-frame count. Checkpoint v1 is restricted to a paused training-room world, the same player and nearest tracked enemy, both alive/standing/quiet, and no active montage. It stores transforms, velocity, health/max health, guard, actor time dilation, and timeline reference metadata. Loading remains paused. It does not restore movement mode, behavior-tree state, pending enemy actions, timers, or callback queues. The checkpoint reference preserves fields for level, actor identities, engine tick, future verified simulation frame, and recording branch ID. Input recording and deterministic replay are not implemented.
+The Playback tab's engine tick counter is not a verified simulation-frame count. SifuTAS has no verified Free Training mode API or reliable mode indicator, so checkpoint v1 no longer assumes that the current level path contains `TrainingRoom`. It requires a readable level identity, pause, the same world and level on load, the same player and nearest active tracked enemy, and both actors alive, standing, quiet, and between montages. The enemy tracker scans current-world `AFightingCharacter` actors and classifies non-pooled actors as active; failure logs report tracker counts. Checkpoints store transforms, velocity, health/max health, guard, actor time dilation, and timeline reference metadata. Loading remains paused. It does not restore movement mode, behavior-tree state, pending enemy actions, timers, or callback queues. The checkpoint reference preserves fields for level, actor identities, engine tick, future verified simulation frame, and recording branch ID. Input recording and deterministic replay are not implemented.
 
 **Acceleration status:** the diagnostic log from the user's extended test did not reproduce the reported gradual acceleration. It recorded native time-dilation transitions from one caller RVA, but the values returned to 1.0 and did not show a monotonic increase. Later samples had a frozen world-time value while real time advanced, so that portion does not establish normal simulated gameplay speed. No cause or fix has been confirmed.
 

@@ -41,6 +41,9 @@ constexpr float kFrameStepSeconds = 1.f / 60.f;
 std::uintptr_t g_base = 0;
 std::atomic<float> g_tas_multiplier{1.f};
 std::atomic<bool> g_paused{false};
+std::atomic<unsigned long long> g_pause_change_serial{0};
+bool g_gui_pause_owned = false;
+unsigned long long g_gui_pause_serial = 0;
 WorldTickFn g_original_world_tick = nullptr;
 EffectiveTimeDilationFn g_original_effective_time_dilation = nullptr;
 SetTimeDilationFn g_original_set_time_dilation = nullptr;
@@ -522,6 +525,7 @@ void ActivateAction(tas::Action action) {
                                                    std::memory_order_relaxed)) {}
             const bool paused = !previous;
             g_steps_requested.store(0, std::memory_order_relaxed);
+            g_pause_change_serial.fetch_add(1, std::memory_order_relaxed);
             SC_LOG("tas: %s", paused ? "paused" : "resumed");
             break;
         }
@@ -545,6 +549,26 @@ void ActivateAction(tas::Action action) {
             break;
         }
         case tas::Action::ToggleGui:
+            if (!ui::IsMenuOpen()) {
+                g_gui_pause_owned = false;
+                if (!g_paused.load(std::memory_order_relaxed)) {
+                    ActivateAction(tas::Action::PauseResume);
+                    if (g_paused.load(std::memory_order_relaxed)) {
+                        g_gui_pause_owned = true;
+                        g_gui_pause_serial =
+                            g_pause_change_serial.load(std::memory_order_relaxed);
+                    }
+                }
+            } else {
+                const bool resume =
+                    g_gui_pause_owned && g_paused.load(std::memory_order_relaxed) &&
+                    g_pause_change_serial.load(std::memory_order_relaxed) ==
+                        g_gui_pause_serial;
+                g_gui_pause_owned = false;
+                ui::ToggleMenu();
+                if (resume) ActivateAction(tas::Action::PauseResume);
+                break;
+            }
             ui::ToggleMenu();
             break;
         case tas::Action::SaveCheckpoint:
@@ -563,7 +587,6 @@ float PlaybackSpeed() { return g_tas_multiplier.load(std::memory_order_relaxed);
 void SetPlaybackSpeed(float speed) {
     if (!std::isfinite(speed) || speed < 0.01f || speed > 4.f) return;
     g_tas_multiplier.store(speed, std::memory_order_relaxed);
-    SC_LOG("tas: playback speed set to %.3fx", speed);
 }
 
 bool IsPaused() { return g_paused.load(std::memory_order_relaxed); }
