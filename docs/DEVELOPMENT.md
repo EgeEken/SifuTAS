@@ -15,7 +15,7 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Immediate milestones
 
-1. **Validate this pass in-game**: test generalized checkpoint capture and partial restore in Free Training, including a player-only save, then test the GUI and supported fields. The previous log diagnosis is confirmed; this build is installed and awaits in-game verification.
+1. **Validate this pass in-game**: check camera framing while paused, cloth reset after teleport, binding-key consumption, montage handling, and profiling output. The prior checkpoint save/restore behavior is confirmed in Free Training; this build awaits installation and verification.
 2. **Validate the dedicated SifuTAS GUI and settings**: mouse handling, tab behavior, configurable controls and settings persistence were previously reported working. Recheck for regressions from scaling and slider changes.
 3. **Validate slowdown** on a training encounter. The recent extended diagnostic session did not reproduce acceleration; its late samples show world time stopped advancing and need a new baseline during active play.
 4. **Validate pause and frame advance**: the user reports these work. Check for input buffering or multi-world tick differences if later changes affect them.
@@ -33,13 +33,19 @@ Capture records availability for transform, velocity, health/max health, guard, 
 
 Restore checks the same world and level, object pointer/path/class, and current-world membership per actor. Supported fields are written and read back. Missing actors are skipped without invalidating the slot. Transform and velocity are skipped when saved/current life or montage state makes pose restoration unsafe. Health and guard do not resurrect actors or reverse down/death state. Animation playback, movement mode, AI queues, timers, pending combat actions, and callbacks remain unsupported. Per-character logs report available, restored, failed, unsupported, and unavailable field masks. F7/F8 requests run on the game thread, and load leaves simulation paused with the slot available for repeated attempts.
 
+The player's actual view is owned by `APlayerCameraManager`. Steam PDB member lookup resolves the controller's `PlayerCameraManager` and `ControlRotation`, both camera cache entries, and `FCameraCacheEntry::POV` location/rotation/FOV. Capture records current and previous cached POV plus controller rotation. Restore sets controller rotation through its reflected UFunction, writes both view caches with PDB-derived offsets, and verifies their values. It does not disable camera follow or interpolation; the normal manager recomputes the view after the world resumes. Camera rig/spring-arm internal lag state is not captured, so post-resume convergence still needs in-game checking.
+
+After a successful character teleport, the mesh receives `ForceClothNextUpdateTeleportAndReset` by reflection. This queues reset for the next cloth update; it does not restore saved cloth particles or guarantee an immediate paused-frame visual refresh. If the UFunction is missing on the installed build, the restore log reports `cloth_reset=unavailable`.
+
+Montage playhead capture is distinct from combat-action capture. On load, a montage position is only sought when the exact same montage UObject remains active; it is read back for verification. The implementation does not start a saved montage when it is no longer active, and does not restore montage notifies, attack orders, behavior trees, pending attacks, root motion, or related timers. Available Free Training logs from the reported attack test show `montage=0`; the observed attack continuation therefore was not a captured active montage and likely depends on Sifu combat-order/animation-graph state. Existing order hooks observe or replay selected orders for co-op presentation; their serialized order structures do not provide a safe whole-fight restore surface.
+
 This is not an arbitrary-frame savestate. A partial restore does not rewind AI, animation, attack actions, movement mode, timers, callbacks, or destroyed actors. Inspect the per-field result while paused before resuming.
 
 ## Known risks
 
 `UWorld::Tick` suppression is an **experiment**, not authoritative engine pausing; other engine timing, animation and input paths may continue. Passing a fixed 1/60 delta to `UWorld::Tick` does not fix the complete engine timestep. `F2` can currently advance a game-world tick without delivering the intended gameplay input. Engine tick hooks may be build-specific or unstable. The prototype does not support deterministic playback or arbitrary-frame savestates.
 
-The current source still initializes original SifuCoop co-op/network infrastructure. Use `[net] mode=off` and do not attempt multiplayer testing. Checkpoint v1 can capture active states but does not restore them coherently; a moving, downed, or montage-active save may load only a subset of fields.
+The current source still initializes original SifuCoop co-op/network infrastructure. Use `[net] mode=off` and do not attempt multiplayer testing. `OnFrame` profiling uses QPC to log five-second averages/maxima for the hook and major inherited calls. The GUI path separately logs its five-second rendering cost while open. Checkpoint save/load logs operation latency; a fixed snapshot is overwritten in place. Process working set/private usage is sampled once per minute. ImGui frame processing and rendering now run only while the TAS GUI is open. No runtime performance conclusion is possible until the instrumented DLL has been exercised for an extended session.
 
 ## Engineering principles
 

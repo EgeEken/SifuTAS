@@ -319,6 +319,18 @@ WANTED_MEMBERS = {
     "M_UPlayerFightingComponent_iOutfitIndex": ("UPlayerFightingComponent",
                                                 "m_iOutfitIndex"),
 
+    "M_APlayerController_PlayerCameraManager": ("APlayerController",
+                                                 "PlayerCameraManager"),
+    "M_AController_ControlRotation": ("AController", "ControlRotation"),
+    "M_APlayerCameraManager_CameraCachePrivate": ("APlayerCameraManager",
+                                                   "CameraCachePrivate"),
+    "M_APlayerCameraManager_LastFrameCameraCachePrivate": (
+        "APlayerCameraManager", "LastFrameCameraCachePrivate"),
+    "M_FCameraCacheEntry_POV": ("FCameraCacheEntry", "POV"),
+    "M_FMinimalViewInfo_Location": ("FMinimalViewInfo", "Location"),
+    "M_FMinimalViewInfo_Rotation": ("FMinimalViewInfo", "Rotation"),
+    "M_FMinimalViewInfo_FOV": ("FMinimalViewInfo", "FOV"),
+
 
 
 

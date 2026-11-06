@@ -1,6 +1,7 @@
 #include "hooks.h"
 
 #include <windows.h>
+#include <psapi.h>
 
 #include <atomic>
 #include <cmath>
@@ -60,8 +61,98 @@ ULONGLONG g_last_diagnostic_sample_ms = 0;
 std::atomic<ULONGLONG> g_last_setter_log_ms{0};
 std::atomic<float> g_last_demo_setter_value{-1.f};
 
+enum PerfSlot {
+    PerfNetwork,
+    PerfPuppetLifecycle,
+    PerfEnemies,
+    PerfPuppet,
+    PerfSelfTest,
+    PerfCheckpoint,
+    PerfDilation,
+    PerfTrace,
+    PerfRunState,
+    PerfFrame,
+    PerfSlotCount,
+};
+
+struct PerfStat {
+    std::uint64_t total = 0;
+    std::uint64_t max = 0;
+    std::uint64_t count = 0;
+};
+
+PerfStat g_perf[PerfSlotCount] = {};
+LARGE_INTEGER g_perf_frequency = {};
+ULONGLONG g_last_perf_log_ms = 0;
+ULONGLONG g_last_memory_log_ms = 0;
+
 constexpr ULONGLONG kDiagnosticSampleIntervalMs = 1000;
 constexpr ULONGLONG kSetterLogIntervalMs = 250;
+constexpr ULONGLONG kPerfLogIntervalMs = 5000;
+constexpr ULONGLONG kMemoryLogIntervalMs = 60000;
+
+LONGLONG PerfNow() {
+    LARGE_INTEGER now = {};
+    QueryPerformanceCounter(&now);
+    return now.QuadPart;
+}
+
+void AddPerf(PerfSlot slot, LONGLONG ticks) {
+    if (ticks < 0) return;
+    PerfStat& stat = g_perf[slot];
+    const auto elapsed = static_cast<std::uint64_t>(ticks);
+    stat.total += elapsed;
+    if (elapsed > stat.max) stat.max = elapsed;
+    ++stat.count;
+}
+
+double PerfAverageUs(PerfSlot slot) {
+    const PerfStat& stat = g_perf[slot];
+    return stat.count && g_perf_frequency.QuadPart
+               ? static_cast<double>(stat.total) * 1000000.0 /
+                     static_cast<double>(g_perf_frequency.QuadPart) / stat.count
+               : 0.0;
+}
+
+double PerfMaxUs(PerfSlot slot) {
+    return g_perf_frequency.QuadPart
+               ? static_cast<double>(g_perf[slot].max) * 1000000.0 /
+                     static_cast<double>(g_perf_frequency.QuadPart)
+               : 0.0;
+}
+
+void LogPerfIfDue() {
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_last_perf_log_ms < kPerfLogIntervalMs) return;
+    g_last_perf_log_ms = now;
+    SC_LOG("tas: perf interval_ms=%llu samples=%llu avg_us={onframe=%.1f network=%.1f "
+           "lifecycle=%.1f enemies=%.1f puppet=%.1f selftest=%.1f checkpoint=%.1f "
+           "dilation=%.1f trace=%.1f runstate=%.1f} max_us={onframe=%.1f enemies=%.1f "
+           "puppet=%.1f checkpoint=%.1f trace=%.1f}",
+           static_cast<unsigned long long>(kPerfLogIntervalMs),
+           static_cast<unsigned long long>(g_perf[PerfFrame].count),
+           PerfAverageUs(PerfFrame), PerfAverageUs(PerfNetwork),
+           PerfAverageUs(PerfPuppetLifecycle), PerfAverageUs(PerfEnemies),
+           PerfAverageUs(PerfPuppet), PerfAverageUs(PerfSelfTest),
+           PerfAverageUs(PerfCheckpoint), PerfAverageUs(PerfDilation),
+           PerfAverageUs(PerfTrace), PerfAverageUs(PerfRunState),
+           PerfMaxUs(PerfFrame), PerfMaxUs(PerfEnemies), PerfMaxUs(PerfPuppet),
+           PerfMaxUs(PerfCheckpoint), PerfMaxUs(PerfTrace));
+    for (PerfStat& stat : g_perf) stat = {};
+
+    if (now - g_last_memory_log_ms >= kMemoryLogIntervalMs) {
+        g_last_memory_log_ms = now;
+        PROCESS_MEMORY_COUNTERS_EX memory = {};
+        memory.cb = sizeof(memory);
+        if (GetProcessMemoryInfo(GetCurrentProcess(),
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory),
+                                 sizeof(memory))) {
+            SC_LOG("tas: memory working_set_kb=%llu private_kb=%llu",
+                   static_cast<unsigned long long>(memory.WorkingSetSize / 1024),
+                   static_cast<unsigned long long>(memory.PrivateUsage / 1024));
+        }
+    }
+}
 
 struct WorldContextFloat {
     ue::UObject* WorldContextObject = nullptr;
@@ -297,19 +388,35 @@ void OnFrame() {
 
     // The socket is pumped before anything that needs a world, so menus and
     // level loads keep acknowledging, pinging and receiving.
+    LONGLONG start = PerfNow();
     sifucoop::net::PumpNetwork();
+    AddPerf(PerfNetwork, PerfNow() - start);
 
+    start = PerfNow();
     sifucoop::game::PreparePuppetLifecycle();
+    AddPerf(PerfPuppetLifecycle, PerfNow() - start);
 
+    start = PerfNow();
     sifucoop::game::TickEnemies();
+    AddPerf(PerfEnemies, PerfNow() - start);
+    start = PerfNow();
     sifucoop::game::TickPuppet();
+    AddPerf(PerfPuppet, PerfNow() - start);
+    start = PerfNow();
     sifucoop::game::TickSelfTest();
+    AddPerf(PerfSelfTest, PerfNow() - start);
+    start = PerfNow();
     sifucoop::tas::checkpoint::ProcessRequests();
+    AddPerf(PerfCheckpoint, PerfNow() - start);
+    start = PerfNow();
     SampleTimeDilation();
+    AddPerf(PerfDilation, PerfNow() - start);
 
     // After everything has moved this frame, so the digest describes the state
     // the player actually saw.
+    start = PerfNow();
     sifucoop::trace::Tick();
+    AddPerf(PerfTrace, PerfNow() - start);
 
     if (frame % 30 != 0) return;
 
@@ -319,6 +426,7 @@ void OnFrame() {
     ue::UObject* player = ue::GetPlayerCharacter(world, 0);
     if (!player) return;
 
+    start = PerfNow();
     sifucoop::game::TickRunState(player);
     sifucoop::game::TickReplayProbe();
 
@@ -336,6 +444,7 @@ void OnFrame() {
             SC_LOG("objmap: GetPathName failed");
         }
     }
+    AddPerf(PerfRunState, PerfNow() - start);
 }
 
 float g_frame_delta = 1.f / 60.f;
@@ -350,13 +459,19 @@ void __fastcall TickHook(void* self, float delta_seconds, bool idle_mode) {
     PollTASKeys();
     g_original_tick(self, delta_seconds, idle_mode);
 
+    const LONGLONG on_frame_start = PerfNow();
     OnFrame();
+    AddPerf(PerfFrame, PerfNow() - on_frame_start);
+    LogPerfIfDue();
 }
 
 }
 
 bool InstallTickHook(std::uintptr_t base, void* gengine) {
     g_base = base;
+    QueryPerformanceFrequency(&g_perf_frequency);
+    g_last_perf_log_ms = GetTickCount64();
+    g_last_memory_log_ms = g_last_perf_log_ms;
 
     const auto target = reinterpret_cast<void*>(base + offsets::UGameEngine_Tick);
     auto** vtable = *reinterpret_cast<void***>(gengine);

@@ -40,7 +40,25 @@ struct AnimState {
     bool position_valid = false;
 };
 
+struct CameraView {
+    FVector location = {};
+    FRotator rotation = {};
+    float fov = 0.f;
+};
+
+struct PlayerCameraState {
+    UObject* controller = nullptr;
+    UObject* manager = nullptr;
+    FRotator control_rotation = {};
+    CameraView current = {};
+    CameraView previous = {};
+};
+
 bool ReadAnimState(UObject* actor, AnimState* out);
+bool SetActiveMontagePosition(UObject* actor, const AnimState& saved);
+bool ReadPlayerCameraState(UObject* world, PlayerCameraState* out);
+bool RestorePlayerCameraState(const PlayerCameraState& state);
+bool ResetClothForTeleport(UObject* actor);
 
 bool ApplyAnimState(UObject* actor, const AnimState& state);
 bool ClearActiveMontage(UObject* actor);

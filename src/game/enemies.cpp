@@ -2598,19 +2598,6 @@ bool EnumerateWorldFighters(ue::UObject** out, int capacity, int* count_out,
     return true;
 }
 
-bool IsCurrentWorldFighter(ue::UObject* actor) {
-    if (!actor || !g_get_all_actors || !g_fighting_character_class) return false;
-    ue::UObject* world = ue::GetWorld();
-    void* actor_class = g_fighting_character_class();
-    if (!world || !actor_class) return false;
-    g_get_all_actors(world, actor_class, &g_actors);
-    if (g_actors.num < 0 || (g_actors.num > 0 && !g_actors.data)) return false;
-    for (int i = 0; i < g_actors.num; ++i) {
-        if (g_actors.data[i] == actor) return true;
-    }
-    return false;
-}
-
 void TickEnemies() {
     static bool list_key = false;
 

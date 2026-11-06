@@ -73,6 +73,88 @@ bool RangeReadable(const void* address, std::size_t size) {
     return reinterpret_cast<std::uintptr_t>(address) + size <= end;
 }
 
+namespace {
+
+bool RangeWritable(const void* address, std::size_t size) {
+    MEMORY_BASIC_INFORMATION info = {};
+    if (VirtualQuery(address, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT)
+        return false;
+    const DWORD protection = info.Protect & 0xff;
+    if (protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
+        protection != PAGE_EXECUTE_READWRITE && protection != PAGE_EXECUTE_WRITECOPY)
+        return false;
+    const auto start = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
+    return reinterpret_cast<std::uintptr_t>(address) + size <= start + info.RegionSize;
+}
+
+template <typename T>
+bool ReadOffset(const UObject* object, std::uint32_t offset, T* out) {
+    if (!object || !offset || !out) return false;
+    const auto* address = reinterpret_cast<const std::uint8_t*>(object) + offset;
+    if (!RangeReadable(address, sizeof(T))) return false;
+    std::memcpy(out, address, sizeof(T));
+    return true;
+}
+
+template <typename T>
+bool WriteOffset(UObject* object, std::uint32_t offset, const T& value) {
+    if (!object || !offset) return false;
+    auto* address = reinterpret_cast<std::uint8_t*>(object) + offset;
+    if (!RangeWritable(address, sizeof(T))) return false;
+    std::memcpy(address, &value, sizeof(T));
+    return true;
+}
+
+bool ReadCameraView(const UObject* manager, std::uint32_t cache_offset, CameraView* out) {
+    if (!manager || !out || !offsets::M_FCameraCacheEntry_POV) return false;
+    const std::uint32_t view_offset = cache_offset + offsets::M_FCameraCacheEntry_POV;
+    return ReadOffset(manager, view_offset + offsets::M_FMinimalViewInfo_Location,
+                      &out->location) &&
+           ReadOffset(manager, view_offset + offsets::M_FMinimalViewInfo_Rotation,
+                      &out->rotation) &&
+           ReadOffset(manager, view_offset + offsets::M_FMinimalViewInfo_FOV, &out->fov) &&
+           std::isfinite(out->location.X) && std::isfinite(out->location.Y) &&
+           std::isfinite(out->location.Z) && std::isfinite(out->rotation.Pitch) &&
+           std::isfinite(out->rotation.Yaw) && std::isfinite(out->rotation.Roll) &&
+           std::isfinite(out->fov);
+}
+
+bool WriteCameraView(UObject* manager, std::uint32_t cache_offset, const CameraView& view) {
+    if (!manager || !offsets::M_FCameraCacheEntry_POV) return false;
+    const std::uint32_t view_offset = cache_offset + offsets::M_FCameraCacheEntry_POV;
+    return WriteOffset(manager, view_offset + offsets::M_FMinimalViewInfo_Location,
+                       view.location) &&
+           WriteOffset(manager, view_offset + offsets::M_FMinimalViewInfo_Rotation,
+                       view.rotation) &&
+           WriteOffset(manager, view_offset + offsets::M_FMinimalViewInfo_FOV, view.fov);
+}
+
+bool SameCameraView(const CameraView& a, const CameraView& b) {
+    return std::fabs(a.location.X - b.location.X) <= 0.1f &&
+           std::fabs(a.location.Y - b.location.Y) <= 0.1f &&
+           std::fabs(a.location.Z - b.location.Z) <= 0.1f &&
+           std::fabs(a.rotation.Pitch - b.rotation.Pitch) <= 0.1f &&
+           std::fabs(std::remainder(a.rotation.Yaw - b.rotation.Yaw, 360.f)) <= 0.1f &&
+           std::fabs(a.rotation.Roll - b.rotation.Roll) <= 0.1f &&
+           std::fabs(a.fov - b.fov) <= 0.1f;
+}
+
+UObject* GetPlayerController(UObject* world) {
+    UObject* statics = FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");
+    if (!world || !statics) return nullptr;
+    struct Params {
+        UObject* WorldContextObject;
+        std::int32_t PlayerIndex;
+        std::uint8_t pad[4];
+        UObject* ReturnValue;
+    } params = {};
+    params.WorldContextObject = world;
+    return CallFunction(statics, L"GetPlayerController", &params) ? params.ReturnValue
+                                                                   : nullptr;
+}
+
+}
+
 bool InitReflection(std::uintptr_t base) {
     g_module_base = base;
     g_fname_ctor = Resolve<FNameCtorFn>(base, offsets::FName_FromWide);
@@ -276,6 +358,83 @@ bool ReadAnimState(UObject* actor, AnimState* out) {
         out->position_valid = std::isfinite(out->position);
     }
     return true;
+}
+
+bool SetActiveMontagePosition(UObject* actor, const AnimState& saved) {
+    if (!saved.montage || !saved.position_valid || !IsAliveObject(saved.montage)) return false;
+    AnimState current = {};
+    if (!ReadAnimState(actor, &current) || current.montage != saved.montage) return false;
+    UObject* anim_instance = GetAnimInstance(actor);
+    if (!anim_instance) return false;
+    struct Params {
+        UObject* Montage;
+        float NewPosition;
+    } params = {saved.montage, saved.position};
+    if (!CallFunction(anim_instance, L"Montage_SetPosition", &params)) return false;
+    AnimState after = {};
+    return ReadAnimState(actor, &after) && after.montage == saved.montage &&
+           after.position_valid && std::fabs(after.position - saved.position) <= 0.02f;
+}
+
+bool ReadPlayerCameraState(UObject* world, PlayerCameraState* out) {
+    if (!world || !out) return false;
+    UObject* controller = GetPlayerController(world);
+    if (!IsAliveObject(controller)) return false;
+    UObject* manager = nullptr;
+    if (!ReadOffset(controller, offsets::M_APlayerController_PlayerCameraManager, &manager) ||
+        !IsAliveObject(manager))
+        return false;
+    PlayerCameraState state = {};
+    state.controller = controller;
+    state.manager = manager;
+    if (!ReadOffset(controller, offsets::M_AController_ControlRotation,
+                    &state.control_rotation) ||
+        !ReadCameraView(manager, offsets::M_APlayerCameraManager_CameraCachePrivate,
+                        &state.current) ||
+        !ReadCameraView(manager, offsets::M_APlayerCameraManager_LastFrameCameraCachePrivate,
+                        &state.previous))
+        return false;
+    *out = state;
+    return true;
+}
+
+bool RestorePlayerCameraState(const PlayerCameraState& state) {
+    if (!IsAliveObject(state.controller) || !IsAliveObject(state.manager)) return false;
+    UObject* manager = nullptr;
+    if (!ReadOffset(state.controller, offsets::M_APlayerController_PlayerCameraManager,
+                    &manager) || manager != state.manager)
+        return false;
+    struct SetRotationParams {
+        FRotator NewRotation;
+    } params = {state.control_rotation};
+    if (!CallFunction(state.controller, L"SetControlRotation", &params)) return false;
+    FRotator control_rotation = {};
+    if (!ReadOffset(state.controller, offsets::M_AController_ControlRotation,
+                    &control_rotation) ||
+        std::fabs(control_rotation.Pitch - state.control_rotation.Pitch) > 0.1f ||
+        std::fabs(std::remainder(control_rotation.Yaw - state.control_rotation.Yaw,
+                                 360.f)) > 0.1f ||
+        std::fabs(control_rotation.Roll - state.control_rotation.Roll) > 0.1f)
+        return false;
+    if (!WriteCameraView(manager, offsets::M_APlayerCameraManager_CameraCachePrivate,
+                         state.current) ||
+        !WriteCameraView(manager, offsets::M_APlayerCameraManager_LastFrameCameraCachePrivate,
+                         state.previous))
+        return false;
+    CameraView current = {};
+    CameraView previous = {};
+    return ReadCameraView(manager, offsets::M_APlayerCameraManager_CameraCachePrivate,
+                          &current) &&
+           ReadCameraView(manager, offsets::M_APlayerCameraManager_LastFrameCameraCachePrivate,
+                          &previous) &&
+           SameCameraView(current, state.current) && SameCameraView(previous, state.previous);
+}
+
+bool ResetClothForTeleport(UObject* actor) {
+    UObject* mesh = GetSkeletalMeshComponent(actor);
+    if (!IsAliveObject(mesh)) return false;
+    struct Params {} params;
+    return CallFunction(mesh, L"ForceClothNextUpdateTeleportAndReset", &params);
 }
 
 bool ApplyAnimState(UObject* actor, const AnimState& state) {

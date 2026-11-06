@@ -42,6 +42,8 @@ bool SetGuiScale(float scale);
 bool SaveSettings();
 bool SettingsSaved();
 bool WasActionPressed(Action action, bool focused);
+void ConsumeBindingKeyUntilRelease(int key);
+void ReleaseBindingKey(int key);
 const char* ActionName(Action action);
 bool BindingText(Binding binding, char* out, int out_size);
 

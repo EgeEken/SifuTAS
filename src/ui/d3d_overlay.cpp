@@ -41,6 +41,11 @@ std::atomic<int> g_settings_status{0};
 ImGuiStyle g_base_style = {};
 float g_applied_scale = -1.f;
 bool g_scale_changed = false;
+LARGE_INTEGER g_ui_perf_frequency = {};
+ULONGLONG g_ui_perf_last_ms = 0;
+ULONGLONG g_ui_perf_total = 0;
+ULONGLONG g_ui_perf_max = 0;
+ULONGLONG g_ui_perf_count = 0;
 
 LRESULT CALLBACK WndProcHook(HWND, UINT, WPARAM, LPARAM);
 
@@ -82,6 +87,8 @@ bool InitialiseFrom(IDXGISwapChain* swap_chain) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    QueryPerformanceFrequency(&g_ui_perf_frequency);
+    g_ui_perf_last_ms = GetTickCount64();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
@@ -100,6 +107,7 @@ bool InitialiseFrom(IDXGISwapChain* swap_chain) {
 }
 
 void CaptureBinding(int key) {
+    tas::ConsumeBindingKeyUntilRelease(key);
     const int action = g_rebind_action.exchange(-1, std::memory_order_relaxed);
     if (action < 0) return;
     unsigned int modifiers = tas::ModifierNone;
@@ -114,6 +122,8 @@ void CaptureBinding(int key) {
 }
 
 LRESULT CALLBACK WndProcHook(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_KEYUP || message == WM_SYSKEYUP)
+        tas::ReleaseBindingKey(static_cast<int>(wparam));
     if (!g_menu_open.load(std::memory_order_relaxed))
         return CallWindowProcW(g_original_wndproc, window, message, wparam, lparam);
 
@@ -178,10 +188,11 @@ void DrawSavestatesTab() {
     ImGui::Text("Slot 1: %s", status.exists ? "saved in memory" : "empty");
     ImGui::Text("Characters captured: %u / %u%s", status.captured_count,
                 status.enumerated_count, status.incomplete ? " (incomplete)" : "");
-    ImGui::Text("Last load: restored %u, partial %u, skipped %u", status.restored_count,
-                status.partial_count, status.skipped_count);
+    ImGui::Text("Actors: supported fields complete %u, partial %u, skipped %u",
+                status.restored_count, status.partial_count, status.skipped_count);
+    ImGui::TextDisabled("Field-complete does not mean the whole simulation was restored.");
     ImGui::TextDisabled("Snapshots include the player and current-world FightingCharacters (cap 32).");
-    ImGui::TextDisabled("Animation, down/death transitions, AI queues, timers and attacks are not restored.");
+    ImGui::TextDisabled("AI, attack orders, timers, callbacks and down/death transitions remain live.");
     ImGui::Separator();
     if (status.exists) {
         ImGui::TextWrapped("Level: %s", status.reference.level_path);
@@ -190,6 +201,12 @@ void DrawSavestatesTab() {
         ImGui::TextWrapped("Player: %s", status.reference.player_identity);
         if (status.reference.enemy_identity[0])
             ImGui::TextWrapped("First other character: %s", status.reference.enemy_identity);
+        ImGui::Text("Camera: %s; last restore: %s", status.camera_available ? "captured" : "unavailable",
+                    status.camera_restored ? "verified" : "not verified");
+        ImGui::Text("Cloth reset queued for %u character(s) on last load.",
+                    status.cloth_reset_count);
+        ImGui::TextWrapped("Cloth reset is queued for the next mesh update; saved cloth-particle history is not restored.");
+        ImGui::TextWrapped("Montage position is restored only if that same montage remains active. Blend-tree pose and combat actions are not reconstructed.");
         if (status.incomplete)
             ImGui::TextWrapped("Snapshot is incomplete. Check the log for enumeration and per-field availability.");
     } else {
@@ -327,17 +344,41 @@ HRESULT __stdcall PresentHook(IDXGISwapChain* swap_chain, UINT sync_interval, UI
     if (swap_chain != g_swap_chain) return g_original_present(swap_chain, sync_interval, flags);
     if (g_initialised && !g_render_target && g_device && !CreateRenderTarget(swap_chain))
         return g_original_present(swap_chain, sync_interval, flags);
-    if (g_initialised && g_render_target) {
+    if (g_initialised && g_render_target &&
+        g_menu_open.load(std::memory_order_relaxed)) {
+        LARGE_INTEGER started = {};
+        LARGE_INTEGER ended = {};
+        QueryPerformanceCounter(&started);
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ApplyGuiScale();
-        ImGui::GetIO().MouseDrawCursor = g_menu_open.load(std::memory_order_relaxed);
-        if (g_menu_open.load(std::memory_order_relaxed)) FeedMenuInput();
+        ImGui::GetIO().MouseDrawCursor = true;
+        FeedMenuInput();
         ImGui::NewFrame();
-        if (g_menu_open.load(std::memory_order_relaxed)) DrawMenu();
+        DrawMenu();
         ImGui::Render();
         g_context->OMSetRenderTargets(1, &g_render_target, nullptr);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        QueryPerformanceCounter(&ended);
+        const ULONGLONG elapsed = static_cast<ULONGLONG>(ended.QuadPart - started.QuadPart);
+        const ULONGLONG now = GetTickCount64();
+        if (g_ui_perf_count == 0) g_ui_perf_last_ms = now;
+        g_ui_perf_total += elapsed;
+        if (elapsed > g_ui_perf_max) g_ui_perf_max = elapsed;
+        ++g_ui_perf_count;
+        if (now - g_ui_perf_last_ms >= 5000 && g_ui_perf_frequency.QuadPart) {
+            SC_LOG("tas: perf ui_open avg_us=%.1f max_us=%.1f samples=%llu",
+                   1000000.0 * static_cast<double>(g_ui_perf_total) /
+                       static_cast<double>(g_ui_perf_frequency.QuadPart) /
+                       static_cast<double>(g_ui_perf_count),
+                   1000000.0 * static_cast<double>(g_ui_perf_max) /
+                       static_cast<double>(g_ui_perf_frequency.QuadPart),
+                   static_cast<unsigned long long>(g_ui_perf_count));
+            g_ui_perf_total = 0;
+            g_ui_perf_max = 0;
+            g_ui_perf_count = 0;
+            g_ui_perf_last_ms = now;
+        }
     }
     return g_original_present(swap_chain, sync_interval, flags);
 }

@@ -18,6 +18,8 @@ SRWLOCK g_settings_lock = SRWLOCK_INIT;
 Settings g_settings = {};
 bool g_previous[kActionCount] = {};
 std::atomic<bool> g_settings_saved{true};
+std::atomic<int> g_suppressed_binding_key{0};
+std::atomic<bool> g_suppressed_key_was_down{false};
 bool g_save_error_logged = false;
 
 int DefaultKey(Action action) {
@@ -228,9 +230,36 @@ bool WasActionPressed(Action action, bool focused) {
     const Settings settings = GetSettings();
     const Binding binding = settings.bindings[index];
     const bool down = IsDown(binding.key) && CurrentModifiers() == binding.modifiers;
+    int suppressed_key = g_suppressed_binding_key.load(std::memory_order_relaxed);
+    if (suppressed_key && IsDown(suppressed_key))
+        g_suppressed_key_was_down.store(true, std::memory_order_relaxed);
+    if (suppressed_key && !IsDown(suppressed_key) &&
+        g_suppressed_key_was_down.exchange(false, std::memory_order_relaxed)) {
+        g_suppressed_binding_key.compare_exchange_strong(
+            suppressed_key, 0, std::memory_order_relaxed);
+        suppressed_key = 0;
+    }
+    if (suppressed_key) {
+        g_previous[index] = down;
+        return false;
+    }
     const bool pressed = down && !g_previous[index];
     g_previous[index] = down;
     return focused && pressed;
+}
+
+void ConsumeBindingKeyUntilRelease(int key) {
+    if (key >= VK_F1 && key <= VK_F12) {
+        g_suppressed_binding_key.store(key, std::memory_order_relaxed);
+        g_suppressed_key_was_down.store(IsDown(key), std::memory_order_relaxed);
+    }
+}
+
+void ReleaseBindingKey(int key) {
+    int expected = key;
+    if (g_suppressed_binding_key.compare_exchange_strong(expected, 0,
+                                                          std::memory_order_relaxed))
+        g_suppressed_key_was_down.store(false, std::memory_order_relaxed);
 }
 
 const char* ActionName(Action action) {

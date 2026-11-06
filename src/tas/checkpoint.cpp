@@ -67,6 +67,8 @@ struct Snapshot {
     int character_count = 0;
     int enumerated_count = 0;
     int player_index = -1;
+    bool camera_available = false;
+    ue::PlayerCameraState camera = {};
     CheckpointReference reference = {};
     ActorState characters[kMaxCharacters] = {};
 };
@@ -238,6 +240,12 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
         snapshot.enumerated_count > snapshot.character_count)
         snapshot.incomplete = true;
 
+    snapshot.camera_available = ue::ReadPlayerCameraState(world, &snapshot.camera);
+    if (!snapshot.camera_available) {
+        snapshot.incomplete = true;
+        SC_LOG("tas: checkpoint camera state unavailable at capture");
+    }
+
     ActorState& player_state = snapshot.characters[snapshot.player_index];
     if (!CopyString(snapshot.reference.player_identity,
                     sizeof(snapshot.reference.player_identity), player_state.identity)) {
@@ -306,15 +314,26 @@ bool VerifyTransform(ue::UObject* actor, const ActorState& state,
 }
 
 void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
-                  int* restored_count, int* partial_count, int* skipped_count) {
+                  int* restored_count, int* partial_count, int* skipped_count,
+                  int* cloth_reset_count, ue::UObject* const* fighters,
+                  int fighter_count, bool fighters_available) {
     const char* reason = "";
     if (!ActorIdentityMatches(state)) {
         reason = "actor missing or UObject identity/class changed";
     } else if (state.player) {
         if (ue::GetPlayerCharacter(snapshot.world, 0) != state.actor)
             reason = "saved player is no longer the current player";
-    } else if (!game::IsCurrentWorldFighter(state.actor)) {
-        reason = "actor is no longer a current-world FightingCharacter";
+    } else if (!fighters_available) {
+        reason = "current-world fighter enumeration unavailable";
+    } else {
+        bool found = false;
+        for (int i = 0; i < fighter_count; ++i) {
+            if (fighters[i] == state.actor) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) reason = "actor is no longer a current-world FightingCharacter";
     }
     if (reason[0]) {
         ++*skipped_count;
@@ -354,9 +373,15 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
         if (!safe_motion) {
             unsupported |= state.fields & (Location | Rotation);
         } else if (!have_location || !have_rotation ||
-                   !game::TeleportActor(state.actor, target_location, target_rotation) ||
-                   !VerifyTransform(state.actor, state, &restored)) {
+                   !game::TeleportActor(state.actor, target_location, target_rotation)) {
             failed |= state.fields & (Location | Rotation);
+        } else {
+            if (!VerifyTransform(state.actor, state, &restored))
+                failed |= state.fields & (Location | Rotation) & ~restored;
+            const bool cloth_reset = ue::ResetClothForTeleport(state.actor);
+            if (cloth_reset) ++*cloth_reset_count;
+            SC_LOG("tas: checkpoint restore actor[%d] cloth_reset=%s", index,
+                   cloth_reset ? "queued" : "unavailable");
         }
     }
     if (state.fields & Velocity) {
@@ -436,11 +461,16 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
             unsupported |= state.fields & (Down | Dead);
     }
     if (state.fields & Animation) {
-        if (state.animation.montage || current_animation.montage ||
-            !current_animation_state)
+        if (!current_animation_state)
             unsupported |= Animation;
-        else
+        else if (!state.animation.montage && !current_animation.montage)
             restored |= Animation;
+        else if (state.animation.montage &&
+                 current_animation.montage == state.animation.montage &&
+                 ue::SetActiveMontagePosition(state.actor, state.animation))
+            restored |= Animation;
+        else
+            unsupported |= Animation;
     }
 
     const std::uint32_t missing = kAllCaptureFields & ~state.fields;
@@ -470,23 +500,36 @@ void SaveCheckpoint() {
     g_snapshot = snapshot;
     g_status.exists = true;
     g_status.incomplete = snapshot.incomplete;
+    g_status.camera_available = snapshot.camera_available;
+    g_status.camera_restored = false;
     g_status.reference = snapshot.reference;
     g_status.enumerated_count = snapshot.enumerated_count;
     g_status.captured_count = snapshot.character_count;
     g_status.restored_count = 0;
     g_status.skipped_count = 0;
     g_status.partial_count = 0;
+    g_status.cloth_reset_count = 0;
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
-                "Saved %d of %d discovered characters%s. Animation/combat actions are not serialized.",
+                "Saved %d of %d discovered characters%s. Simulation actions are not serialized.",
                 snapshot.character_count, snapshot.enumerated_count,
                 snapshot.incomplete ? " (incomplete snapshot)" : "");
     ReleaseSRWLockExclusive(&g_lock);
 
     SC_LOG("tas: checkpoint saved level='%s' tick=%llu characters=%d discovered=%d "
-           "capacity=%d incomplete=%u", snapshot.reference.level_path,
+           "capacity=%d incomplete=%u camera=%u snapshot_bytes=%llu", snapshot.reference.level_path,
            static_cast<unsigned long long>(snapshot.reference.engine_tick),
            snapshot.character_count, snapshot.enumerated_count, kMaxCharacters,
-           snapshot.incomplete ? 1u : 0u);
+           snapshot.incomplete ? 1u : 0u, snapshot.camera_available ? 1u : 0u,
+           static_cast<unsigned long long>(sizeof(Snapshot)));
+    if (snapshot.camera_available) {
+        SC_LOG("tas: checkpoint camera captured control_rot=%.2f,%.2f,%.2f "
+               "view=%.1f,%.1f,%.1f rot=%.2f,%.2f,%.2f fov=%.2f",
+               snapshot.camera.control_rotation.Pitch, snapshot.camera.control_rotation.Yaw,
+               snapshot.camera.control_rotation.Roll, snapshot.camera.current.location.X,
+               snapshot.camera.current.location.Y, snapshot.camera.current.location.Z,
+               snapshot.camera.current.rotation.Pitch, snapshot.camera.current.rotation.Yaw,
+               snapshot.camera.current.rotation.Roll, snapshot.camera.current.fov);
+    }
     for (int i = 0; i < snapshot.character_count; ++i) {
         const ActorState& state = snapshot.characters[i];
         SC_LOG("tas: checkpoint capture actor[%d] role=%s path='%s' class='%s' "
@@ -506,12 +549,15 @@ void InvalidateSnapshot(const char* error) {
     g_snapshot = {};
     g_status.exists = false;
     g_status.incomplete = false;
+    g_status.camera_available = false;
+    g_status.camera_restored = false;
     g_status.reference = {};
     g_status.enumerated_count = 0;
     g_status.captured_count = 0;
     g_status.restored_count = 0;
     g_status.skipped_count = 0;
     g_status.partial_count = 0;
+    g_status.cloth_reset_count = 0;
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
                 "Load invalidated: %s", error);
     ReleaseSRWLockExclusive(&g_lock);
@@ -550,25 +596,55 @@ void LoadCheckpoint() {
     int restored_count = 0;
     int partial_count = 0;
     int skipped_count = 0;
+    int cloth_reset_count = 0;
+    bool camera_restored = false;
+    ue::UObject* current_fighters[256] = {};
+    int current_fighter_count = 0;
+    int current_fighter_total = 0;
+    bool needs_fighter_enumeration = false;
+    for (int i = 0; i < snapshot.character_count; ++i)
+        if (!snapshot.characters[i].player) needs_fighter_enumeration = true;
+    const bool fighters_available = !needs_fighter_enumeration ||
+        game::EnumerateWorldFighters(current_fighters, kEnumerationBuffer,
+                                     &current_fighter_count, &current_fighter_total);
+    SC_LOG("tas: checkpoint load fighter enumeration available=%u count=%d total=%d",
+           fighters_available ? 1u : 0u, current_fighter_count, current_fighter_total);
     SC_LOG("tas: checkpoint load requested tick=%llu characters=%d discovered=%d incomplete=%u",
            static_cast<unsigned long long>(hooks::FrameCount()), snapshot.character_count,
            snapshot.enumerated_count, snapshot.incomplete ? 1u : 0u);
     for (int i = 0; i < snapshot.character_count; ++i) {
         RestoreActor(snapshot, snapshot.characters[i], i, &restored_count,
-                     &partial_count, &skipped_count);
+                     &partial_count, &skipped_count, &cloth_reset_count,
+                     current_fighters, current_fighter_count, fighters_available);
+    }
+
+    if (snapshot.camera_available) {
+        ue::PlayerCameraState current_camera = {};
+        camera_restored = ue::ReadPlayerCameraState(world, &current_camera) &&
+                          current_camera.controller == snapshot.camera.controller &&
+                          current_camera.manager == snapshot.camera.manager &&
+                          ue::RestorePlayerCameraState(snapshot.camera);
+        SC_LOG("tas: checkpoint camera restore=%s",
+               camera_restored ? "verified" : "failed");
     }
 
     AcquireSRWLockExclusive(&g_lock);
     g_status.restored_count = restored_count;
     g_status.partial_count = partial_count;
     g_status.skipped_count = skipped_count;
+    g_status.cloth_reset_count = cloth_reset_count;
+    g_status.camera_available = snapshot.camera_available;
+    g_status.camera_restored = camera_restored;
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
-                "Load finished: restored=%d partial=%d skipped=%d. Remains paused; animation, AI queues and combat actions are not restored.",
-                restored_count, partial_count, skipped_count);
+                "Fields: restored=%d partial=%d skipped=%d; camera=%s cloth-reset=%d. Paused; AI/actions remain live.",
+                restored_count, partial_count, skipped_count,
+                camera_restored ? "restored" : "unavailable", cloth_reset_count);
     ReleaseSRWLockExclusive(&g_lock);
     SC_LOG("tas: checkpoint load finished restored=%d partial=%d skipped=%d "
-           "snapshot_incomplete=%u; animation and AI/combat actions remain live",
-           restored_count, partial_count, skipped_count, snapshot.incomplete ? 1u : 0u);
+           "camera=%s cloth_reset=%d snapshot_incomplete=%u; AI/combat actions remain live",
+           restored_count, partial_count, skipped_count,
+           camera_restored ? "restored" : "unavailable", cloth_reset_count,
+           snapshot.incomplete ? 1u : 0u);
 }
 
 }
@@ -579,8 +655,28 @@ void QueueLoad() { g_requests.fetch_or(kLoadRequest, std::memory_order_relaxed);
 
 void ProcessRequests() {
     const std::uint32_t requests = g_requests.exchange(0, std::memory_order_relaxed);
-    if (requests & kSaveRequest) SaveCheckpoint();
-    if (requests & kLoadRequest) LoadCheckpoint();
+    LARGE_INTEGER frequency = {};
+    LARGE_INTEGER start = {};
+    LARGE_INTEGER end = {};
+    QueryPerformanceFrequency(&frequency);
+    if (requests & kSaveRequest) {
+        QueryPerformanceCounter(&start);
+        SaveCheckpoint();
+        QueryPerformanceCounter(&end);
+        if (frequency.QuadPart)
+            SC_LOG("tas: checkpoint perf operation=save elapsed_ms=%.3f",
+                   1000.0 * static_cast<double>(end.QuadPart - start.QuadPart) /
+                       static_cast<double>(frequency.QuadPart));
+    }
+    if (requests & kLoadRequest) {
+        QueryPerformanceCounter(&start);
+        LoadCheckpoint();
+        QueryPerformanceCounter(&end);
+        if (frequency.QuadPart)
+            SC_LOG("tas: checkpoint perf operation=load elapsed_ms=%.3f",
+                   1000.0 * static_cast<double>(end.QuadPart - start.QuadPart) /
+                       static_cast<double>(frequency.QuadPart));
+    }
 }
 
 Status GetStatus() {
