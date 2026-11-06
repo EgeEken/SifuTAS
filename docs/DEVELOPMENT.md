@@ -15,7 +15,7 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Immediate milestones
 
-1. **Validate this pass in-game**: test generalized checkpoint capture and partial restore in Free Training, including a player-only save, then test the GUI and supported fields. The previous log diagnosis is confirmed; this code pass awaits build and deployment.
+1. **Validate this pass in-game**: test generalized checkpoint capture and partial restore in Free Training, including a player-only save, then test the GUI and supported fields. The previous log diagnosis is confirmed; this build is installed and awaits in-game verification.
 2. **Validate the dedicated SifuTAS GUI and settings**: mouse handling, tab behavior, configurable controls and settings persistence were previously reported working. Recheck for regressions from scaling and slider changes.
 3. **Validate slowdown** on a training encounter. The recent extended diagnostic session did not reproduce acceleration; its late samples show world time stopped advancing and need a new baseline during active play.
 4. **Validate pause and frame advance**: the user reports these work. Check for input buffering or multi-world tick differences if later changes affect them.
