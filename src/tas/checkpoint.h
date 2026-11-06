@@ -8,14 +8,14 @@ namespace sifucoop::tas::checkpoint {
 
 struct Status {
     bool exists = false;
+    bool incomplete = false;
     CheckpointReference reference = {};
-    float player_health = 0.f;
-    float player_max_health = 0.f;
-    float player_guard = 0.f;
-    float enemy_health = 0.f;
-    float enemy_max_health = 0.f;
-    float enemy_guard = 0.f;
-    char last_result[224] = "No checkpoint saved.";
+    std::uint32_t enumerated_count = 0;
+    std::uint32_t captured_count = 0;
+    std::uint32_t restored_count = 0;
+    std::uint32_t skipped_count = 0;
+    std::uint32_t partial_count = 0;
+    char last_result[256] = "No checkpoint saved.";
 };
 
 void QueueSave();

@@ -2566,6 +2566,51 @@ int GetEnemyRows(EnemyRow* out, int max_out) {
     return count;
 }
 
+bool EnumerateWorldFighters(ue::UObject** out, int capacity, int* count_out,
+                           int* total_out) {
+    if (count_out) *count_out = 0;
+    if (total_out) *total_out = 0;
+    if (!g_get_all_actors || !g_fighting_character_class || !out || capacity <= 0)
+        return false;
+    ue::UObject* world = ue::GetWorld();
+    if (!world) return false;
+    void* actor_class = g_fighting_character_class();
+    if (!actor_class) return false;
+    g_get_all_actors(world, actor_class, &g_actors);
+    if (g_actors.num < 0 || (g_actors.num > 0 && !g_actors.data)) return false;
+    if (total_out) *total_out = g_actors.num;
+
+    int count = 0;
+    const int available = g_actors.num < capacity ? g_actors.num : capacity;
+    for (int i = 0; i < available; ++i) {
+        ue::UObject* actor = g_actors.data[i];
+        if (!actor) continue;
+        bool duplicate = false;
+        for (int j = 0; j < count; ++j) {
+            if (out[j] == actor) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) out[count++] = actor;
+    }
+    if (count_out) *count_out = count;
+    return true;
+}
+
+bool IsCurrentWorldFighter(ue::UObject* actor) {
+    if (!actor || !g_get_all_actors || !g_fighting_character_class) return false;
+    ue::UObject* world = ue::GetWorld();
+    void* actor_class = g_fighting_character_class();
+    if (!world || !actor_class) return false;
+    g_get_all_actors(world, actor_class, &g_actors);
+    if (g_actors.num < 0 || (g_actors.num > 0 && !g_actors.data)) return false;
+    for (int i = 0; i < g_actors.num; ++i) {
+        if (g_actors.data[i] == actor) return true;
+    }
+    return false;
+}
+
 void TickEnemies() {
     static bool list_key = false;
 

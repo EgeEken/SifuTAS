@@ -23,12 +23,31 @@ namespace offsets = sifucoop::offsets;
 
 constexpr std::uint32_t kSaveRequest = 1;
 constexpr std::uint32_t kLoadRequest = 2;
-constexpr float kMaxQuietSpeed = 25.f;
-constexpr float kMaxEnemyDistance = 1500.f;
+constexpr int kMaxCharacters = 32;
+constexpr int kEnumerationBuffer = 256;
+
+enum Field : std::uint32_t {
+    Location = 1u << 0,
+    Rotation = 1u << 1,
+    Velocity = 1u << 2,
+    Health = 1u << 3,
+    MaxHealth = 1u << 4,
+    Guard = 1u << 5,
+    Down = 1u << 6,
+    Dead = 1u << 7,
+    TimeDilation = 1u << 8,
+    Animation = 1u << 9,
+};
+
+constexpr std::uint32_t kAllCaptureFields = (1u << 10) - 1u;
+constexpr std::uint32_t kVitalsFields = Health | MaxHealth | Guard;
 
 struct ActorState {
+    ue::UObject* actor = nullptr;
     char identity[128] = {};
     char class_path[160] = {};
+    std::uint32_t fields = 0;
+    bool player = false;
     ue::FVector location = {};
     ue::FRotator rotation = {};
     ue::FVector velocity = {};
@@ -43,13 +62,13 @@ struct ActorState {
 
 struct Snapshot {
     bool valid = false;
+    bool incomplete = false;
     ue::UObject* world = nullptr;
-    ue::UObject* player = nullptr;
-    ue::UObject* enemy = nullptr;
-    std::uint32_t enemy_hash = 0;
+    int character_count = 0;
+    int enumerated_count = 0;
+    int player_index = -1;
     CheckpointReference reference = {};
-    ActorState player_state = {};
-    ActorState enemy_state = {};
+    ActorState characters[kMaxCharacters] = {};
 };
 
 SRWLOCK g_lock = SRWLOCK_INIT;
@@ -61,8 +80,10 @@ bool Finite(const ue::FVector& value) {
     return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
 }
 
-float SpeedSquared(const ue::FVector& value) {
-    return value.X * value.X + value.Y * value.Y + value.Z * value.Z;
+bool ReadableFloatField(const ue::UObject* object, std::uint32_t offset) {
+    if (!object || !offset) return false;
+    const auto* field = reinterpret_cast<const std::uint8_t*>(object) + offset;
+    return ue::RangeReadable(field, sizeof(float));
 }
 
 bool CopyString(char* out, int size, const char* value) {
@@ -70,12 +91,6 @@ bool CopyString(char* out, int size, const char* value) {
         return false;
     lstrcpynA(out, value, size);
     return true;
-}
-
-bool ReadableFloatField(const ue::UObject* object, std::uint32_t offset) {
-    if (!object || !offset) return false;
-    const auto* field = reinterpret_cast<const std::uint8_t*>(object) + offset;
-    return ue::RangeReadable(field, sizeof(float));
 }
 
 void SetResult(const char* operation, const char* message) {
@@ -86,121 +101,80 @@ void SetResult(const char* operation, const char* message) {
     SC_LOG("tas: checkpoint %s: %s", operation, message);
 }
 
-bool CaptureActor(ue::UObject* actor, ActorState* out, const char** error) {
-    if (!ue::IsAliveObject(actor)) {
-        *error = "actor is not a valid live world actor";
-        return false;
-    }
+bool CaptureActor(ue::UObject* actor, bool player, ActorState* out) {
+    if (!ue::IsAliveObject(actor) || !out) return false;
+    out->actor = actor;
+    out->player = player;
     if (!ue::GetObjectPathName(actor, out->identity, sizeof(out->identity)) ||
-        !ue::GetObjectClassPathName(actor, out->class_path, sizeof(out->class_path))) {
-        *error = "actor identity could not be read";
+        !ue::GetObjectClassPathName(actor, out->class_path, sizeof(out->class_path)))
         return false;
+
+    if (ue::GetActorLocation(actor, &out->location) && Finite(out->location))
+        out->fields |= Location;
+    if (ue::GetActorRotation(actor, &out->rotation) &&
+        std::isfinite(out->rotation.Pitch) && std::isfinite(out->rotation.Yaw) &&
+        std::isfinite(out->rotation.Roll))
+        out->fields |= Rotation;
+
+    if (game::GetActorVelocity(actor, &out->velocity) && Finite(out->velocity))
+        out->fields |= Velocity;
+
+    const game::Fighter fighter = game::ResolveFighter(actor);
+    if (fighter.health && ue::IsAliveObject(fighter.health)) {
+        if (ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fHealth)) {
+            out->health = game::GetHealth(fighter);
+            if (std::isfinite(out->health)) out->fields |= Health;
+        }
+        if (ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fMaxHealth)) {
+            out->max_health = game::GetMaxHealth(fighter);
+            if (std::isfinite(out->max_health)) out->fields |= MaxHealth;
+        }
+        if (game::ReadDownDeathState(fighter, &out->down, &out->dead))
+            out->fields |= Down | Dead;
+    }
+    if (fighter.defense && ue::IsAliveObject(fighter.defense) &&
+        ReadableFloatField(fighter.defense, offsets::M_UDefenseComponent_fCurrentGuard)) {
+        out->guard = game::GetGuard(fighter);
+        if (std::isfinite(out->guard)) out->fields |= Guard;
     }
 
-    game::Fighter fighter = game::ResolveFighter(actor);
-    if (!fighter.health || !fighter.defense || !ue::IsAliveObject(fighter.health) ||
-        !ue::IsAliveObject(fighter.defense)) {
-        *error = "health or defense component is unavailable";
-        return false;
-    }
-    if (!ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fHealth) ||
-        !ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fMaxHealth) ||
-        !ReadableFloatField(fighter.defense, offsets::M_UDefenseComponent_fCurrentGuard) ||
-        !ReadableFloatField(actor, offsets::M_AActor_CustomTimeDilation)) {
-        *error = "health, guard, or custom time-dilation field is unreadable";
-        return false;
-    }
-    if (!ue::GetActorLocation(actor, &out->location) ||
-        !ue::GetActorRotation(actor, &out->rotation)) {
-        *error = "actor transform could not be read";
-        return false;
-    }
-    const game::PresentationTargets targets = game::ResolvePresentationTargets(actor);
-    if (!game::CanSetPresentationVelocity(targets) ||
-        !ue::IsAliveObject(targets.movement) || !ue::IsAliveObject(targets.root)) {
-        *error = "movement and root components are required for velocity restore";
-        return false;
-    }
-    if (!game::GetActorVelocity(actor, &out->velocity) || !Finite(out->velocity)) {
-        *error = "movement velocity could not be read";
-        return false;
+    if (ReadableFloatField(actor, offsets::M_AActor_CustomTimeDilation)) {
+        out->time_dilation = game::GetActorTimeDilation(actor);
+        if (std::isfinite(out->time_dilation)) out->fields |= TimeDilation;
     }
 
-    out->health = game::GetHealth(fighter);
-    out->max_health = game::GetMaxHealth(fighter);
-    out->guard = game::GetGuard(fighter);
-    out->down = game::IsDown(fighter);
-    out->dead = game::IsDead(fighter);
-    if (!std::isfinite(out->health) || !std::isfinite(out->max_health) ||
-        !std::isfinite(out->guard) || out->health <= 0.5f || out->max_health <= 0.f ||
-        out->guard < 0.f) {
-        *error = "health or guard values are invalid";
-        return false;
-    }
-    if (out->down || out->dead) {
-        *error = "down or dead actors cannot be checkpointed in v1";
-        return false;
-    }
-    if (offsets::M_AActor_CustomTimeDilation == 0) {
-        *error = "actor time-dilation offset is unavailable";
-        return false;
-    }
-    out->time_dilation = game::GetActorTimeDilation(actor);
-    if (!std::isfinite(out->time_dilation) || out->time_dilation <= 0.01f) {
-        *error = "actor time dilation is invalid";
-        return false;
-    }
-    if (!ue::ReadAnimState(actor, &out->animation)) {
-        *error = "animation montage state could not be read";
-        return false;
-    }
-    if (out->animation.montage) {
-        *error = "active animation montages are not supported; save between attacks";
-        return false;
-    }
-    if (SpeedSquared(out->velocity) > kMaxQuietSpeed * kMaxQuietSpeed) {
-        *error = "actor is moving; v1 only saves a quiet encounter";
-        return false;
-    }
+    if (ue::ReadAnimState(actor, &out->animation) && out->animation.position_valid &&
+        (!out->animation.montage || ue::IsAliveObject(out->animation.montage)))
+        out->fields |= Animation;
     return true;
 }
 
-bool FindNearestEnemy(ue::UObject* player, ue::UObject** actor_out,
-                      std::uint32_t* hash_out, const char** error) {
-    game::EnemyRow rows[64] = {};
-    const int count = game::GetEnemyRows(rows, 64);
-    int active_count = 0;
-    int living_count = 0;
-    int nearby_count = 0;
-    float nearest = kMaxEnemyDistance;
-    for (int i = 0; i < count; ++i) {
-        const game::EnemyRow& row = rows[i];
-        if (!row.active) continue;
-        ++active_count;
-        if (row.down || row.health <= 0.5f) continue;
-        ++living_count;
-        if (row.distance >= 0.f && row.distance < kMaxEnemyDistance) ++nearby_count;
-        if (row.distance < 0.f || row.distance >= nearest || row.hash == 0) continue;
-        ue::UObject* enemy = game::FindEnemyByHash(row.hash);
-        if (!enemy || enemy == player || !ue::IsAliveObject(enemy)) continue;
-        nearest = row.distance;
-        *actor_out = enemy;
-        *hash_out = row.hash;
+bool AppendActor(Snapshot* snapshot, ue::UObject* actor, bool player) {
+    if (!actor) return true;
+    for (int i = 0; i < snapshot->character_count; ++i) {
+        if (snapshot->characters[i].actor == actor) {
+            if (player) {
+                snapshot->characters[i].player = true;
+                snapshot->player_index = i;
+            }
+            return true;
+        }
     }
-    if (*actor_out) return true;
-    if (count == 0)
-        *error = "enemy tracker found no FightingCharacter actors in this world";
-    else if (active_count == 0)
-        *error = "enemy tracker found no active, non-pooled opponents";
-    else if (living_count == 0)
-        *error = "tracked active opponents are all down or have no health";
-    else if (nearby_count == 0)
-        *error = "no living tracked opponent is within 1500 units of the player";
-    else
-        *error = "nearby opponent could not be resolved as a live actor";
-    SC_LOG("tas: checkpoint enemy search tracked=%d active=%d living=%d nearby=%d",
-           count, active_count, living_count, nearby_count);
-    return false;
+    if (snapshot->character_count >= kMaxCharacters) {
+        snapshot->incomplete = true;
+        return false;
+    }
+    ActorState& state = snapshot->characters[snapshot->character_count];
+    if (!CaptureActor(actor, player, &state)) {
+        snapshot->incomplete = true;
+        SC_LOG("tas: checkpoint capture skipped unidentified actor player=%u",
+               player ? 1u : 0u);
+        return true;
+    }
+    if (state.fields != kAllCaptureFields) snapshot->incomplete = true;
+    if (player) snapshot->player_index = snapshot->character_count;
+    ++snapshot->character_count;
+    return true;
 }
 
 bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
@@ -210,46 +184,73 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
         *error = "pause the simulation before saving (F1)";
         return false;
     }
-    if (!game::ActorsReady()) {
-        *error = "combat component access is not ready";
-        return false;
-    }
     if (!have_level) {
         *error = "current world level identity could not be read";
         return false;
     }
+
     ue::UObject* world = ue::GetWorld();
     if (!ue::IsAliveObject(world)) {
         *error = "current world is unavailable";
         return false;
     }
     ue::UObject* player = ue::GetPlayerCharacter(world, 0);
-    if (!player || !ue::IsAliveObject(player)) {
+    if (!ue::IsAliveObject(player)) {
         *error = "player character is unavailable";
         return false;
     }
-    ue::UObject* enemy = nullptr;
-    std::uint32_t enemy_hash = 0;
-    if (!FindNearestEnemy(player, &enemy, &enemy_hash, error)) return false;
 
     Snapshot snapshot = {};
     snapshot.world = world;
-    snapshot.player = player;
-    snapshot.enemy = enemy;
-    snapshot.enemy_hash = enemy_hash;
     if (!CopyString(snapshot.reference.level_path,
                     sizeof(snapshot.reference.level_path), level)) {
         *error = "current level identity is too long for the checkpoint slot";
         return false;
     }
-    if (!CaptureActor(player, &snapshot.player_state, error) ||
-        !CaptureActor(enemy, &snapshot.enemy_state, error))
+    if (!AppendActor(&snapshot, player, true) || snapshot.player_index < 0) {
+        *error = "player identity could not be captured";
         return false;
+    }
 
-    CopyString(snapshot.reference.player_identity,
-               sizeof(snapshot.reference.player_identity), snapshot.player_state.identity);
-    CopyString(snapshot.reference.enemy_identity,
-               sizeof(snapshot.reference.enemy_identity), snapshot.enemy_state.identity);
+    ue::UObject* fighters[kEnumerationBuffer] = {};
+    int fighter_count = 0;
+    int fighter_total = 0;
+    const bool enumerated = game::EnumerateWorldFighters(
+        fighters, kEnumerationBuffer, &fighter_count, &fighter_total);
+    if (!enumerated) {
+        snapshot.incomplete = true;
+        SC_LOG("tas: checkpoint character enumeration unavailable; saving player snapshot only");
+    } else {
+        snapshot.enumerated_count = fighter_total;
+        for (int i = 0; i < fighter_count; ++i) {
+            AppendActor(&snapshot, fighters[i], false);
+        }
+        if (fighter_total > fighter_count) snapshot.incomplete = true;
+        bool player_enumerated = false;
+        for (int i = 0; i < fighter_count; ++i)
+            if (fighters[i] == player) player_enumerated = true;
+        if (!player_enumerated) ++snapshot.enumerated_count;
+    }
+
+    if (snapshot.enumerated_count < snapshot.character_count)
+        snapshot.enumerated_count = snapshot.character_count;
+    if (snapshot.character_count >= kMaxCharacters &&
+        snapshot.enumerated_count > snapshot.character_count)
+        snapshot.incomplete = true;
+
+    ActorState& player_state = snapshot.characters[snapshot.player_index];
+    if (!CopyString(snapshot.reference.player_identity,
+                    sizeof(snapshot.reference.player_identity), player_state.identity)) {
+        *error = "player identity is too long for the checkpoint reference";
+        return false;
+    }
+    for (int i = 0; i < snapshot.character_count; ++i) {
+        const ActorState& state = snapshot.characters[i];
+        if (state.player) continue;
+        CopyString(snapshot.reference.enemy_identity,
+                   sizeof(snapshot.reference.enemy_identity), state.identity);
+        break;
+    }
     snapshot.reference.engine_tick = hooks::FrameCount();
     snapshot.reference.simulation_frame = 0;
     snapshot.reference.simulation_frame_verified = false;
@@ -279,127 +280,180 @@ bool SameVector(const ue::FVector& a, const ue::FVector& b) {
     return x * x + y * y + z * z <= 1.f;
 }
 
-bool ValidateActorIdentity(ue::UObject* actor, const ActorState& state,
-                           game::Fighter* fighter_out, const char** error) {
-    if (!actor || !ue::IsAliveObject(actor)) {
-        *error = "actor failed UObject validation";
-        return false;
-    }
+bool ActorIdentityMatches(const ActorState& state) {
+    if (!state.actor || !ue::IsAliveObject(state.actor)) return false;
     char identity[128] = {};
     char class_path[160] = {};
-    if (!ue::GetObjectPathName(actor, identity, sizeof(identity)) ||
-        !ue::GetObjectClassPathName(actor, class_path, sizeof(class_path)) ||
-        strcmp(identity, state.identity) != 0 || strcmp(class_path, state.class_path) != 0) {
-        *error = "actor identity or class no longer matches the checkpoint";
-        return false;
-    }
-    game::Fighter fighter = game::ResolveFighter(actor);
-    if (!fighter.health || !fighter.defense || !ue::IsAliveObject(fighter.health) ||
-        !ue::IsAliveObject(fighter.defense)) {
-        *error = "health or defense component is unavailable";
-        return false;
-    }
-    if (!ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fHealth) ||
-        !ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fMaxHealth) ||
-        !ReadableFloatField(fighter.defense, offsets::M_UDefenseComponent_fCurrentGuard) ||
-        !ReadableFloatField(actor, offsets::M_AActor_CustomTimeDilation)) {
-        *error = "health, guard, or custom time-dilation field is unreadable";
-        return false;
-    }
-    if (game::IsDown(fighter) || game::IsDead(fighter) || game::GetHealth(fighter) <= 0.5f) {
-        *error = "down/dead actors cannot be resurrected by checkpoint v1";
-        return false;
-    }
+    return ue::GetObjectPathName(state.actor, identity, sizeof(identity)) &&
+           ue::GetObjectClassPathName(state.actor, class_path, sizeof(class_path)) &&
+           strcmp(identity, state.identity) == 0 &&
+           strcmp(class_path, state.class_path) == 0;
+}
+
+bool VerifyTransform(ue::UObject* actor, const ActorState& state,
+                     std::uint32_t* restored) {
     ue::FVector location = {};
     ue::FRotator rotation = {};
-    ue::FVector velocity = {};
-    ue::AnimState animation = {};
-    if (!ue::GetActorLocation(actor, &location) || !ue::GetActorRotation(actor, &rotation) ||
-        !ue::ReadAnimState(actor, &animation)) {
-        *error = "required transform, movement, or animation component is unavailable";
+    if (!ue::GetActorLocation(actor, &location) || !ue::GetActorRotation(actor, &rotation))
         return false;
-    }
-    const game::PresentationTargets targets = game::ResolvePresentationTargets(actor);
-    if (!game::CanSetPresentationVelocity(targets) ||
-        !ue::IsAliveObject(targets.movement) || !ue::IsAliveObject(targets.root) ||
-        !game::GetActorVelocity(actor, &velocity) || !Finite(velocity)) {
-        *error = "movement/root components required for velocity restore are unavailable";
-        return false;
-    }
-    *fighter_out = fighter;
-    return true;
+    const bool location_ok = !(state.fields & Location) ||
+                             SameLocation(location, state.location);
+    const bool rotation_ok = !(state.fields & Rotation) ||
+                             SameRotation(rotation, state.rotation);
+    if (location_ok && (state.fields & Location)) *restored |= Location;
+    if (rotation_ok && (state.fields & Rotation)) *restored |= Rotation;
+    return location_ok && rotation_ok;
 }
 
-bool ValidateSnapshot(const Snapshot& snapshot, ue::UObject** player_out,
-                      ue::UObject** enemy_out, game::Fighter* player_fighter,
-                      game::Fighter* enemy_fighter, const char** error) {
-    if (!hooks::IsPaused()) {
-        *error = "pause the simulation before loading (F1)";
-        return false;
+void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
+                  int* restored_count, int* partial_count, int* skipped_count) {
+    const char* reason = "";
+    if (!ActorIdentityMatches(state)) {
+        reason = "actor missing or UObject identity/class changed";
+    } else if (state.player) {
+        if (ue::GetPlayerCharacter(snapshot.world, 0) != state.actor)
+            reason = "saved player is no longer the current player";
+    } else if (!game::IsCurrentWorldFighter(state.actor)) {
+        reason = "actor is no longer a current-world FightingCharacter";
     }
-    if (!snapshot.valid) {
-        *error = "no checkpoint is saved";
-        return false;
-    }
-    ue::UObject* world = ue::GetWorld();
-    if (!world || world != snapshot.world || !ue::IsAliveObject(world)) {
-        *error = "world instance changed; checkpoint invalidated";
-        return false;
-    }
-    char level[512] = {};
-    if (!ue::GetCurrentLevelPath(level, sizeof(level)) ||
-        strcmp(level, snapshot.reference.level_path) != 0) {
-        *error = "level identity changed; checkpoint invalidated";
-        return false;
-    }
-    ue::UObject* player = ue::GetPlayerCharacter(world, 0);
-    if (!player || player != snapshot.player || !ue::IsAliveObject(player)) {
-        *error = "player actor changed; checkpoint invalidated";
-        return false;
+    if (reason[0]) {
+        ++*skipped_count;
+        SC_LOG("tas: checkpoint restore actor[%d] '%s' skipped: %s", index,
+               state.identity, reason);
+        return;
     }
 
-    game::EnemyRow rows[64] = {};
-    const int count = game::GetEnemyRows(rows, 64);
-    bool tracked = false;
-    for (int i = 0; i < count; ++i) {
-        if (rows[i].hash != snapshot.enemy_hash || !rows[i].active) continue;
-        ue::UObject* current = game::FindEnemyByHash(snapshot.enemy_hash);
-        tracked = current && current == snapshot.enemy && rows[i].hash != 0;
-        break;
+    const game::Fighter fighter = game::ResolveFighter(state.actor);
+    std::uint32_t restored = 0;
+    std::uint32_t failed = 0;
+    std::uint32_t unsupported = 0;
+    bool current_down = false;
+    bool current_dead = false;
+    const bool current_life_state =
+        game::ReadDownDeathState(fighter, &current_down, &current_dead);
+    ue::AnimState current_animation = {};
+    const bool current_animation_state = ue::ReadAnimState(state.actor, &current_animation) &&
+                                         current_animation.position_valid &&
+                                         (!current_animation.montage ||
+                                          ue::IsAliveObject(current_animation.montage));
+    const bool saved_life_state = (state.fields & (Down | Dead)) == (Down | Dead);
+    const bool saved_animation_state = (state.fields & Animation) != 0;
+    const bool life_state_safe = saved_life_state && current_life_state && !state.down &&
+                                 !state.dead && !current_down && !current_dead;
+    const bool animation_safe = saved_animation_state && current_animation_state &&
+                                !state.animation.montage && !current_animation.montage;
+    const bool safe_motion = life_state_safe && animation_safe;
+
+    if ((state.fields & (Location | Rotation)) != 0) {
+        ue::FVector target_location = state.location;
+        ue::FRotator target_rotation = state.rotation;
+        const bool have_location = (state.fields & Location) != 0 ||
+                                   ue::GetActorLocation(state.actor, &target_location);
+        const bool have_rotation = (state.fields & Rotation) != 0 ||
+                                   ue::GetActorRotation(state.actor, &target_rotation);
+        if (!safe_motion) {
+            unsupported |= state.fields & (Location | Rotation);
+        } else if (!have_location || !have_rotation ||
+                   !game::TeleportActor(state.actor, target_location, target_rotation) ||
+                   !VerifyTransform(state.actor, state, &restored)) {
+            failed |= state.fields & (Location | Rotation);
+        }
     }
-    if (!tracked) {
-        *error = "saved enemy is no longer an active tracked actor; checkpoint invalidated";
-        return false;
+    if (state.fields & Velocity) {
+        if (!safe_motion) {
+            unsupported |= Velocity;
+        } else if (game::SetPresentationVelocity(state.actor, state.velocity)) {
+            ue::FVector velocity = {};
+            if (game::GetActorVelocity(state.actor, &velocity) &&
+                SameVector(velocity, state.velocity))
+                restored |= Velocity;
+            else
+                failed |= Velocity;
+        } else {
+            failed |= Velocity;
+        }
     }
-    if (!ValidateActorIdentity(player, snapshot.player_state, player_fighter, error) ||
-        !ValidateActorIdentity(snapshot.enemy, snapshot.enemy_state, enemy_fighter, error))
-        return false;
-    *player_out = player;
-    *enemy_out = snapshot.enemy;
-    return true;
-}
 
-bool VerifyTransform(ue::UObject* actor, const ActorState& state) {
-    ue::FVector location = {};
-    ue::FRotator rotation = {};
-    return ue::GetActorLocation(actor, &location) && ue::GetActorRotation(actor, &rotation) &&
-           SameLocation(location, state.location) && SameRotation(rotation, state.rotation);
-}
+    const bool life_fields_available = (state.fields & (Down | Dead)) == (Down | Dead);
+    if (!life_fields_available || !current_life_state || state.down || state.dead ||
+        current_down || current_dead ||
+        ((state.fields & Health) && state.health <= 0.5f) ||
+        ((state.fields & Health) && game::GetHealth(fighter) <= 0.5f)) {
+        unsupported |= state.fields & kVitalsFields;
+    } else {
+        if (state.fields & MaxHealth) {
+            if (!fighter.health || !ue::IsAliveObject(fighter.health) ||
+                !ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fMaxHealth)) {
+                failed |= MaxHealth;
+            } else {
+                game::SetMaxHealth(fighter, state.max_health);
+                if (std::fabs(game::GetMaxHealth(fighter) - state.max_health) <= 0.1f)
+                    restored |= MaxHealth;
+                else
+                    failed |= MaxHealth;
+            }
+        }
+        if (state.fields & Health) {
+            if (!fighter.health || !ue::IsAliveObject(fighter.health) ||
+                !ReadableFloatField(fighter.health, offsets::M_UHealthComponent_fHealth)) {
+                failed |= Health;
+            } else {
+                game::SetHealth(fighter, state.health);
+                if (std::fabs(game::GetHealth(fighter) - state.health) <= 0.1f)
+                    restored |= Health;
+                else
+                    failed |= Health;
+            }
+        }
+        if (state.fields & Guard) {
+            if (!fighter.defense || !ue::IsAliveObject(fighter.defense) ||
+                !ReadableFloatField(fighter.defense,
+                                    offsets::M_UDefenseComponent_fCurrentGuard)) {
+                failed |= Guard;
+            } else {
+                game::SetGuard(fighter, state.guard);
+                if (std::fabs(game::GetGuard(fighter) - state.guard) <= 0.1f)
+                    restored |= Guard;
+                else
+                    failed |= Guard;
+            }
+        }
+    }
 
-bool VerifyVelocity(ue::UObject* actor, const ActorState& state) {
-    ue::FVector velocity = {};
-    return game::GetActorVelocity(actor, &velocity) && SameVector(velocity, state.velocity);
-}
+    if (state.fields & TimeDilation) {
+        if (game::SetActorTimeDilation(state.actor, state.time_dilation) &&
+            std::fabs(game::GetActorTimeDilation(state.actor) - state.time_dilation) <= 0.001f)
+            restored |= TimeDilation;
+        else
+            failed |= TimeDilation;
+    }
 
-bool VerifyVitals(const game::Fighter& fighter, const ActorState& state) {
-    return std::fabs(game::GetMaxHealth(fighter) - state.max_health) <= 0.1f &&
-           std::fabs(game::GetHealth(fighter) - state.health) <= 0.1f &&
-           std::fabs(game::GetGuard(fighter) - state.guard) <= 0.1f &&
-           !game::IsDown(fighter) && !game::IsDead(fighter);
-}
+    if (state.fields & (Down | Dead)) {
+        if (saved_life_state && current_life_state && state.down == current_down &&
+            state.dead == current_dead)
+            restored |= state.fields & (Down | Dead);
+        else
+            unsupported |= state.fields & (Down | Dead);
+    }
+    if (state.fields & Animation) {
+        if (state.animation.montage || current_animation.montage ||
+            !current_animation_state)
+            unsupported |= Animation;
+        else
+            restored |= Animation;
+    }
 
-bool VerifyDilation(ue::UObject* actor, const ActorState& state) {
-    return std::fabs(game::GetActorTimeDilation(actor) - state.time_dilation) <= 0.001f;
+    const std::uint32_t missing = kAllCaptureFields & ~state.fields;
+    if (failed || unsupported || missing) {
+        ++*partial_count;
+        SC_LOG("tas: checkpoint restore actor[%d] '%s' partial available=%03X restored=%03X "
+               "failed=%03X unsupported=%03X unavailable=%03X",
+               index, state.identity, state.fields, restored, failed, unsupported, missing);
+    } else {
+        ++*restored_count;
+        SC_LOG("tas: checkpoint restore actor[%d] '%s' restored fields=%03X",
+               index, state.identity, restored);
+    }
 }
 
 void SaveCheckpoint() {
@@ -411,50 +465,55 @@ void SaveCheckpoint() {
         SetResult("save refused", error);
         return;
     }
+
     AcquireSRWLockExclusive(&g_lock);
     g_snapshot = snapshot;
     g_status.exists = true;
+    g_status.incomplete = snapshot.incomplete;
     g_status.reference = snapshot.reference;
-    g_status.player_health = snapshot.player_state.health;
-    g_status.player_max_health = snapshot.player_state.max_health;
-    g_status.player_guard = snapshot.player_state.guard;
-    g_status.enemy_health = snapshot.enemy_state.health;
-    g_status.enemy_max_health = snapshot.enemy_state.max_health;
-    g_status.enemy_guard = snapshot.enemy_state.guard;
+    g_status.enumerated_count = snapshot.enumerated_count;
+    g_status.captured_count = snapshot.character_count;
+    g_status.restored_count = 0;
+    g_status.skipped_count = 0;
+    g_status.partial_count = 0;
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
-                "Saved quiet checkpoint; AI queues and movement mode are not captured.");
+                "Saved %d of %d discovered characters%s. Animation/combat actions are not serialized.",
+                snapshot.character_count, snapshot.enumerated_count,
+                snapshot.incomplete ? " (incomplete snapshot)" : "");
     ReleaseSRWLockExclusive(&g_lock);
-    SC_LOG("tas: checkpoint saved level='%s' tick=%llu player='%s' health=%.1f guard=%.1f "
-           "dilation=%.3f position=%.1f,%.1f,%.1f velocity=%.1f,%.1f,%.1f "
-           "enemy='%s' hash=%08X health=%.1f guard=%.1f dilation=%.3f "
-           "position=%.1f,%.1f,%.1f velocity=%.1f,%.1f,%.1f",
-           snapshot.reference.level_path,
+
+    SC_LOG("tas: checkpoint saved level='%s' tick=%llu characters=%d discovered=%d "
+           "capacity=%d incomplete=%u", snapshot.reference.level_path,
            static_cast<unsigned long long>(snapshot.reference.engine_tick),
-           snapshot.player_state.identity, snapshot.player_state.health,
-           snapshot.player_state.guard, snapshot.player_state.time_dilation,
-           snapshot.player_state.location.X, snapshot.player_state.location.Y,
-           snapshot.player_state.location.Z, snapshot.player_state.velocity.X,
-           snapshot.player_state.velocity.Y, snapshot.player_state.velocity.Z,
-           snapshot.enemy_state.identity, snapshot.enemy_hash, snapshot.enemy_state.health,
-           snapshot.enemy_state.guard, snapshot.enemy_state.time_dilation,
-           snapshot.enemy_state.location.X, snapshot.enemy_state.location.Y,
-           snapshot.enemy_state.location.Z, snapshot.enemy_state.velocity.X,
-           snapshot.enemy_state.velocity.Y, snapshot.enemy_state.velocity.Z);
+           snapshot.character_count, snapshot.enumerated_count, kMaxCharacters,
+           snapshot.incomplete ? 1u : 0u);
+    for (int i = 0; i < snapshot.character_count; ++i) {
+        const ActorState& state = snapshot.characters[i];
+        SC_LOG("tas: checkpoint capture actor[%d] role=%s path='%s' class='%s' "
+               "fields=%03X hp=%.1f/%.1f guard=%.1f down=%u dead=%u dilation=%.3f "
+               "montage=%u montage_pos=%.3f pos_valid=%u velocity=%.1f,%.1f,%.1f",
+               i, state.player ? "player" : "character", state.identity, state.class_path,
+               state.fields, state.health, state.max_health, state.guard, state.down ? 1u : 0u,
+               state.dead ? 1u : 0u, state.time_dilation,
+               state.animation.montage ? 1u : 0u, state.animation.position,
+               state.animation.position_valid ? 1u : 0u, state.velocity.X,
+               state.velocity.Y, state.velocity.Z);
+    }
 }
 
 void InvalidateSnapshot(const char* error) {
     AcquireSRWLockExclusive(&g_lock);
     g_snapshot = {};
     g_status.exists = false;
+    g_status.incomplete = false;
     g_status.reference = {};
-    g_status.player_health = 0.f;
-    g_status.player_max_health = 0.f;
-    g_status.player_guard = 0.f;
-    g_status.enemy_health = 0.f;
-    g_status.enemy_max_health = 0.f;
-    g_status.enemy_guard = 0.f;
+    g_status.enumerated_count = 0;
+    g_status.captured_count = 0;
+    g_status.restored_count = 0;
+    g_status.skipped_count = 0;
+    g_status.partial_count = 0;
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
-                "Load refused: %s", error);
+                "Load invalidated: %s", error);
     ReleaseSRWLockExclusive(&g_lock);
     SC_LOG("tas: checkpoint invalidated: %s", error);
 }
@@ -465,78 +524,51 @@ void LoadCheckpoint() {
     snapshot = g_snapshot;
     ReleaseSRWLockShared(&g_lock);
 
-    ue::UObject* player = nullptr;
-    ue::UObject* enemy = nullptr;
-    game::Fighter player_fighter;
-    game::Fighter enemy_fighter;
-    const char* error = "unknown validation failure";
-    SC_LOG("tas: checkpoint load requested tick=%llu",
-           static_cast<unsigned long long>(hooks::FrameCount()));
-    if (!ValidateSnapshot(snapshot, &player, &enemy, &player_fighter, &enemy_fighter, &error)) {
-        if (strstr(error, "invalidated")) InvalidateSnapshot(error);
-        else SetResult("load refused", error);
+    if (!hooks::IsPaused()) {
+        SetResult("load refused", "pause the simulation before loading (F1)");
+        return;
+    }
+    if (!snapshot.valid) {
+        SetResult("load refused", "no checkpoint is saved");
+        return;
+    }
+    ue::UObject* world = ue::GetWorld();
+    if (world != snapshot.world || !ue::IsAliveObject(world)) {
+        InvalidateSnapshot("world instance changed");
+        return;
+    }
+    char level[512] = {};
+    if (!ue::GetCurrentLevelPath(level, sizeof(level))) {
+        SetResult("load refused", "current world level identity could not be read");
+        return;
+    }
+    if (strcmp(level, snapshot.reference.level_path) != 0) {
+        InvalidateSnapshot("level identity changed");
         return;
     }
 
-    if (!ue::ClearActiveMontage(player)) {
-        SetResult("load partial", "player Montage_Stop failed or montage remained active");
-        return;
-    }
-    if (!ue::ClearActiveMontage(enemy)) {
-        SetResult("load partial", "enemy Montage_Stop failed or montage remained active");
-        return;
-    }
-    if (!game::TeleportActor(player, snapshot.player_state.location,
-                             snapshot.player_state.rotation) ||
-        !VerifyTransform(player, snapshot.player_state)) {
-        SetResult("load partial", "player transform write or verification failed");
-        return;
-    }
-    if (!game::TeleportActor(enemy, snapshot.enemy_state.location,
-                             snapshot.enemy_state.rotation) ||
-        !VerifyTransform(enemy, snapshot.enemy_state)) {
-        SetResult("load partial", "enemy transform write or verification failed");
-        return;
-    }
-    if (!game::SetPresentationVelocity(player, snapshot.player_state.velocity) ||
-        !VerifyVelocity(player, snapshot.player_state)) {
-        SetResult("load partial", "player velocity write or verification failed");
-        return;
-    }
-    if (!game::SetPresentationVelocity(enemy, snapshot.enemy_state.velocity) ||
-        !VerifyVelocity(enemy, snapshot.enemy_state)) {
-        SetResult("load partial", "enemy velocity write or verification failed");
-        return;
+    int restored_count = 0;
+    int partial_count = 0;
+    int skipped_count = 0;
+    SC_LOG("tas: checkpoint load requested tick=%llu characters=%d discovered=%d incomplete=%u",
+           static_cast<unsigned long long>(hooks::FrameCount()), snapshot.character_count,
+           snapshot.enumerated_count, snapshot.incomplete ? 1u : 0u);
+    for (int i = 0; i < snapshot.character_count; ++i) {
+        RestoreActor(snapshot, snapshot.characters[i], i, &restored_count,
+                     &partial_count, &skipped_count);
     }
 
-    game::SetMaxHealth(player_fighter, snapshot.player_state.max_health);
-    game::SetHealth(player_fighter, snapshot.player_state.health);
-    game::SetGuard(player_fighter, snapshot.player_state.guard);
-    if (!VerifyVitals(player_fighter, snapshot.player_state)) {
-        SetResult("load partial", "player health/max-health/guard write verification failed");
-        return;
-    }
-    game::SetMaxHealth(enemy_fighter, snapshot.enemy_state.max_health);
-    game::SetHealth(enemy_fighter, snapshot.enemy_state.health);
-    game::SetGuard(enemy_fighter, snapshot.enemy_state.guard);
-    if (!VerifyVitals(enemy_fighter, snapshot.enemy_state)) {
-        SetResult("load partial", "enemy health/max-health/guard write verification failed");
-        return;
-    }
-    if (!game::SetActorTimeDilation(player, snapshot.player_state.time_dilation) ||
-        !VerifyDilation(player, snapshot.player_state)) {
-        SetResult("load partial", "player custom time-dilation write verification failed");
-        return;
-    }
-    if (!game::SetActorTimeDilation(enemy, snapshot.enemy_state.time_dilation) ||
-        !VerifyDilation(enemy, snapshot.enemy_state)) {
-        SetResult("load partial", "enemy custom time-dilation write verification failed");
-        return;
-    }
-
-    SetResult("load verified", "supported fields restored; still paused; AI queues are not restored");
-    SC_LOG("tas: checkpoint post-restore verified player transform/velocity/vitals/dilation; "
-           "enemy transform/velocity/vitals/dilation; both alive and standing");
+    AcquireSRWLockExclusive(&g_lock);
+    g_status.restored_count = restored_count;
+    g_status.partial_count = partial_count;
+    g_status.skipped_count = skipped_count;
+    _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
+                "Load finished: restored=%d partial=%d skipped=%d. Remains paused; animation, AI queues and combat actions are not restored.",
+                restored_count, partial_count, skipped_count);
+    ReleaseSRWLockExclusive(&g_lock);
+    SC_LOG("tas: checkpoint load finished restored=%d partial=%d skipped=%d "
+           "snapshot_incomplete=%u; animation and AI/combat actions remain live",
+           restored_count, partial_count, skipped_count, snapshot.incomplete ? 1u : 0u);
 }
 
 }

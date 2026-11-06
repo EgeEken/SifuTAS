@@ -37,6 +37,7 @@ UObject* GetWorld();
 struct AnimState {
     UObject* montage = nullptr;
     float position = 0.f;
+    bool position_valid = false;
 };
 
 bool ReadAnimState(UObject* actor, AnimState* out);

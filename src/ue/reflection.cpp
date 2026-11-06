@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cmath>
 #include <cstring>
 
 #include "../core/log.h"
@@ -257,6 +258,7 @@ UObject* GetAnimInstance(UObject* actor) {
 }
 
 bool ReadAnimState(UObject* actor, AnimState* out) {
+    if (!out) return false;
     UObject* anim_instance = GetAnimInstance(actor);
     if (!anim_instance) return false;
 
@@ -267,9 +269,11 @@ bool ReadAnimState(UObject* actor, AnimState* out) {
 
     out->montage = montage_params.ReturnValue;
     out->position = 0.f;
+    out->position_valid = out->montage == nullptr || g_montage_get_position != nullptr;
 
     if (out->montage && g_montage_get_position) {
         out->position = g_montage_get_position(anim_instance, out->montage);
+        out->position_valid = std::isfinite(out->position);
     }
     return true;
 }

@@ -176,20 +176,22 @@ void DrawSavestatesTab() {
     if (ImGui::Button("Load checkpoint (F8)", ImVec2(button_width, 0)))
         hooks::ActivateAction(tas::Action::LoadCheckpoint);
     ImGui::Text("Slot 1: %s", status.exists ? "saved in memory" : "empty");
-    ImGui::TextDisabled("Requires a paused encounter with one tracked, living enemy.");
-    ImGui::TextDisabled("Save/load supports quiet, standing actors with no active montage.");
-    ImGui::TextDisabled("Movement mode and pending enemy AI actions are not captured.");
+    ImGui::Text("Characters captured: %u / %u%s", status.captured_count,
+                status.enumerated_count, status.incomplete ? " (incomplete)" : "");
+    ImGui::Text("Last load: restored %u, partial %u, skipped %u", status.restored_count,
+                status.partial_count, status.skipped_count);
+    ImGui::TextDisabled("Snapshots include the player and current-world FightingCharacters (cap 32).");
+    ImGui::TextDisabled("Animation, down/death transitions, AI queues, timers and attacks are not restored.");
     ImGui::Separator();
     if (status.exists) {
         ImGui::TextWrapped("Level: %s", status.reference.level_path);
         ImGui::Text("Saved engine tick: %llu (simulation frame unverified)",
                     static_cast<unsigned long long>(status.reference.engine_tick));
         ImGui::TextWrapped("Player: %s", status.reference.player_identity);
-        ImGui::Text("Player health %.1f / %.1f, guard %.1f", status.player_health,
-                    status.player_max_health, status.player_guard);
-        ImGui::TextWrapped("Enemy: %s", status.reference.enemy_identity);
-        ImGui::Text("Enemy health %.1f / %.1f, guard %.1f", status.enemy_health,
-                    status.enemy_max_health, status.enemy_guard);
+        if (status.reference.enemy_identity[0])
+            ImGui::TextWrapped("First other character: %s", status.reference.enemy_identity);
+        if (status.incomplete)
+            ImGui::TextWrapped("Snapshot is incomplete. Check the log for enumeration and per-field availability.");
     } else {
         ImGui::TextDisabled("No checkpoint is saved.");
     }

@@ -4,7 +4,7 @@
 
 Goal: tool-assisted, choreographed combat footage with precise slowdown, frame stepping, and eventually input editing, replay, checkpoints and savestates. This is for creative gameplay videos, **not** verified competitive TAS speedrun files.
 
-The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** Slowdown, pause, frame stepping, gameplay mouse behavior, the dedicated GUI, configurable controls, shortcut rebinding, and settings persistence were tested in-game by the user. Checkpoint v1 was tested in Free Training but its save was refused by a `TrainingRoom` path check. That build did not log whether level-path lookup failed or returned a different path; this pass removes the restriction and adds diagnostics. The changes await in-game verification.
+The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** Slowdown, pause, frame stepping, gameplay mouse behavior, the dedicated GUI, configurable controls, shortcut rebinding, settings persistence, GUI scaling, and the continuous speed slider were reported working in-game. The previous checkpoint test in Free Training failed because the offline enemy row had zero cached health. This pass uses current-world fighter enumeration and direct combat-component reads. It awaits in-game verification.
 
 ## Current prototype
 
@@ -25,7 +25,7 @@ The GUI has Playback, Savestates, Recording, and Settings tabs. F6 pauses on ope
 
 Bindings, speed multipliers, and frame-step increment are read from and saved to `SifuTAS.ini` alongside `dsound.dll`. If absent, the mod creates it with defaults on startup. Shortcuts support F1–F12, optionally combined with Ctrl, Alt, or Shift; duplicate bindings are rejected. See [SifuTAS.ini.example](SifuTAS.ini.example) for the default values.
 
-The Playback tab's engine tick counter is not a verified simulation-frame count. SifuTAS has no verified Free Training mode API or reliable mode indicator, so checkpoint v1 no longer assumes that the current level path contains `TrainingRoom`. It requires a readable level identity, pause, the same world and level on load, the same player and nearest active tracked enemy, and both actors alive, standing, quiet, and between montages. The enemy tracker scans current-world `AFightingCharacter` actors and classifies non-pooled actors as active; failure logs report tracker counts. Checkpoints store transforms, velocity, health/max health, guard, actor time dilation, and timeline reference metadata. Loading remains paused. It does not restore movement mode, behavior-tree state, pending enemy actions, timers, or callback queues. The checkpoint reference preserves fields for level, actor identities, engine tick, future verified simulation frame, and recording branch ID. Input recording and deterministic replay are not implemented.
+The Playback tab's engine tick counter is not a verified simulation-frame count. Checkpoint v1 has no map-name restriction. It enumerates up to 256 current-world `AFightingCharacter` candidates and captures up to 32 distinct actors plus the player; larger or unavailable enumerations are marked incomplete. Field availability is stored per actor for transform, velocity, health/max health, guard, down/death flags, time dilation, and montage/playhead. Moving and downed actors do not prevent saving. Loading checks the same world and level, actor pointer, object path/class, and current-world membership. It restores supported fields per character with readback, skipping missing actors and reporting partial state. Animation/combat actions, down/death transitions, movement mode, AI queues, timers, and callbacks are not restored; loading remains paused. The checkpoint reference retains level, player/enemy identity, engine tick, future verified simulation frame, and recording branch ID. Input recording and deterministic replay are not implemented.
 
 **Acceleration status:** the diagnostic log from the user's extended test did not reproduce the reported gradual acceleration. It recorded native time-dilation transitions from one caller RVA, but the values returned to 1.0 and did not show a monotonic increase. Later samples had a frozen world-time value while real time advanced, so that portion does not establish normal simulated gameplay speed. No cause or fix has been confirmed.
 
@@ -43,14 +43,14 @@ cd SifuTAS
 
 Use `-LocalBuildName epic` for Epic. The output is `build\dsound.dll`. **Do not use `-NoGen` on the first build.** If the PDB is absent, stop and report that blocker; do not guess offsets, disable build fingerprint checks, or use addresses from another executable.
 
-For now, **install manually after reviewing the game directory**:
+For the established Steam test installation, follow the standing authorization conditions below. For other installations, review the game directory and get explicit permission before replacing a DLL:
 
 1. Close Sifu and back up any existing `dsound.dll` or related mod files. Do not overwrite a different mod's DLL or stack multiple `dsound.dll` proxies.
 2. Copy `build\dsound.dll` beside `Sifu-Win64-Shipping.exe`. Optionally copy `SifuCoop.ini.example` there as `SifuCoop.ini` (`[net] mode=off`).
 3. Launch the game normally, offline, and test a short training encounter. Read `%LOCALAPPDATA%\Sifu\Saved\Logs\SifuCoop.log` for `tas:` lines.
 4. To uninstall, remove this project's `dsound.dll` and restore the backed-up mod files.
 
-The build script has an optional `-Deploy` flag, but **it deliberately refuses to overwrite an existing** `dsound.dll`. Do not deploy or replace an installed DLL without explicit approval.
+The build script has an optional `-Deploy` flag, but **it deliberately refuses to overwrite an existing** `dsound.dll`. Standing authorization permits this project to replace only the established Steam SifuTAS test DLL after verifying the current file is a known SifuTAS build, Sifu is closed, a rollback backup is hash-verified, and the new DLL hash matches. Stop if the target is missing, unexpected, or may belong to another mod.
 
 ## Development and Codex
 

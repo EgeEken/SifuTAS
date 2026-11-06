@@ -63,6 +63,10 @@ struct EnemyRow {
 
 int GetEnemyRows(EnemyRow* out, int max_out);
 
+bool EnumerateWorldFighters(ue::UObject** out, int capacity, int* count_out,
+                           int* total_out);
+bool IsCurrentWorldFighter(ue::UObject* actor);
+
 void DumpRoster();
 
 }

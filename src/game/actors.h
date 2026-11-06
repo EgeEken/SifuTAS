@@ -38,6 +38,7 @@ bool KillWithAnimation(const Fighter& fighter, ue::UObject* instigator,
 
 bool IsDown(const Fighter& fighter);
 bool IsDead(const Fighter& fighter);
+bool ReadDownDeathState(const Fighter& fighter, bool* down, bool* dead);
 
 void SetDown(const Fighter& fighter, bool down);
 

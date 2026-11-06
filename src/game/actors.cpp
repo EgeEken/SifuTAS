@@ -203,6 +203,15 @@ bool IsDead(const Fighter& fighter) {
     return g_is_dead(fighter.health);
 }
 
+bool ReadDownDeathState(const Fighter& fighter, bool* down, bool* dead) {
+    if (!fighter.health || !down || !dead || !g_is_down || !g_is_dead ||
+        !ue::IsAliveObject(fighter.health))
+        return false;
+    *down = g_is_down(fighter.health);
+    *dead = g_is_dead(fighter.health);
+    return true;
+}
+
 void NotifyDownStateChanged(const Fighter& fighter, bool down) {
     if (!fighter.health) return;
     if (down) {
@@ -351,9 +360,11 @@ constexpr std::uintptr_t kSceneComponentVelocityOffset = 0x150;
 bool GetActorVelocity(ue::UObject* actor, ue::FVector* out) {
     if (!actor || !out || !g_get_movement_component) return false;
     ue::UObject* movement = g_get_movement_component(actor);
-    if (!movement) return false;
-    std::memcpy(out, reinterpret_cast<const std::uint8_t*>(movement) + kMovementVelocityOffset,
-                sizeof(*out));
+    if (!movement || !ue::IsValidObject(movement)) return false;
+    const auto* value = reinterpret_cast<const std::uint8_t*>(movement) +
+                        kMovementVelocityOffset;
+    if (!ue::RangeReadable(value, sizeof(*out))) return false;
+    std::memcpy(out, value, sizeof(*out));
     return true;
 }
 
