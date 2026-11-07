@@ -30,6 +30,7 @@ using GetMovementComponentFn = ue::UObject*(__fastcall*)(const ue::UObject* acto
 using RequestDirectMoveFn = void(__fastcall*)(ue::UObject* component, const ue::FVector& velocity, bool force_max_speed);
 using SetRelationshipFn = void(__fastcall*)(ue::UObject* social, ue::UObject* toward,
                                              std::uint8_t relationship);
+using IsGameOverFn = bool(__fastcall*)(ue::UObject* world_context);
 
 GetHealthComponentFn g_get_health = nullptr;
 GetAttackComponentFn g_get_attack = nullptr;
@@ -46,6 +47,7 @@ BrainClassFn g_brain_class = nullptr;
 GetMovementComponentFn g_get_movement_component = nullptr;
 RequestDirectMoveFn g_request_direct_move = nullptr;
 SetRelationshipFn g_set_relationship = nullptr;
+IsGameOverFn g_is_game_over = nullptr;
 
 using HealthKillFn = void(__fastcall*)(ue::UObject*, std::int32_t, ue::UObject*, ue::UObject*,
                                        bool, bool);
@@ -115,6 +117,8 @@ void InitActors(std::uintptr_t base) {
         Resolve<SetCurrentPoseAssetFn>(base, offsets::USCAnimInstance_SetCurrentPoseAsset);
     g_set_relationship =
         Resolve<SetRelationshipFn>(base, offsets::USocialComponent_SetRelationship);
+    g_is_game_over =
+        Resolve<IsGameOverFn>(base, offsets::UWGGameplayStatics_BPF_IsGameOver);
     g_health_kill = Resolve<HealthKillFn>(base, offsets::UHealthComponent_Kill);
     g_on_rep_set_is_down =
         Resolve<HealthNotifyFn>(base, offsets::UCharacterHealthComponent_OnRepSetIsDown);
@@ -209,6 +213,84 @@ bool ReadDownDeathState(const Fighter& fighter, bool* down, bool* dead) {
         return false;
     *down = g_is_down(fighter.health);
     *dead = g_is_dead(fighter.health);
+    return true;
+}
+
+bool ReadPlayerTransitionState(const Fighter& fighter, bool* transitioning) {
+    if (!fighter.health || !transitioning || !offsets::M_UCharacterHealthComponent_eDownState ||
+        !ue::IsAliveObject(fighter.health))
+        return false;
+    const auto* state_address = reinterpret_cast<const std::uint8_t*>(fighter.health) +
+                                offsets::M_UCharacterHealthComponent_eDownState;
+    if (!ue::RangeReadable(state_address, sizeof(std::uint8_t))) return false;
+    std::uint8_t state = 0;
+    std::memcpy(&state, state_address, sizeof(state));
+    if (state == 8 || state > 9) return false;
+    *transitioning = state != 9;
+    return true;
+}
+
+bool ReadGameOverState(ue::UObject* world, bool* game_over) {
+    if (!world || !game_over || !g_is_game_over) return false;
+    *game_over = g_is_game_over(world);
+    return true;
+}
+
+bool CheckpointGameplayState(ue::UObject* world, ue::UObject* player,
+                             const char** reason) {
+    if (!reason) return false;
+    *reason = "game state is unavailable";
+    if (!ue::IsAliveObject(world)) {
+        *reason = "world is unavailable";
+        return false;
+    }
+    bool transitioning = false;
+    if (!ue::ReadWorldTransitionState(world, &transitioning)) {
+        *reason = "world transition state could not be validated";
+        return false;
+    }
+    if (transitioning) {
+        *reason = "world level transition is active";
+        return false;
+    }
+    bool game_over = false;
+    if (!ReadGameOverState(world, &game_over)) {
+        *reason = "game-over state could not be validated";
+        return false;
+    }
+    if (game_over) {
+        *reason = "game-over/death screen is active";
+        return false;
+    }
+    if (!ue::IsAliveObject(player)) {
+        *reason = "player character is unavailable";
+        return false;
+    }
+    const Fighter fighter = ResolveFighter(player);
+    bool down = false;
+    bool dead = false;
+    if (!ReadDownDeathState(fighter, &down, &dead)) {
+        *reason = "player death state could not be validated";
+        return false;
+    }
+    if (dead) {
+        *reason = "player is dead or dying";
+        return false;
+    }
+    if (down) {
+        *reason = "player is down or in a death transition";
+        return false;
+    }
+    bool player_transitioning = false;
+    if (!ReadPlayerTransitionState(fighter, &player_transitioning)) {
+        *reason = "player transition state could not be validated";
+        return false;
+    }
+    if (player_transitioning) {
+        *reason = "player death/respawn transition is active";
+        return false;
+    }
+    *reason = "supported active gameplay state";
     return true;
 }
 

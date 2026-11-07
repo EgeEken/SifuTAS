@@ -33,6 +33,8 @@ bool GetActorRotation(UObject* actor, FRotator* out);
 UObject* GetPlayerCharacter(UObject* world_context, int index);
 
 UObject* GetWorld();
+bool IsWorldInSeamlessTravel(UObject* world);
+bool ReadWorldTransitionState(UObject* world, bool* transitioning);
 
 struct AnimState {
     UObject* montage = nullptr;
@@ -49,9 +51,21 @@ struct CameraView {
 struct PlayerCameraState {
     UObject* controller = nullptr;
     UObject* manager = nullptr;
+    UObject* view_target = nullptr;
+    UObject* pending_view_target = nullptr;
+    UObject* transform_component = nullptr;
     FRotator control_rotation = {};
     CameraView current = {};
     CameraView previous = {};
+    CameraView target_view = {};
+    FVector view_target_location = {};
+    FRotator view_target_rotation = {};
+    FVector view_target_offset = {};
+    FVector manager_component_location = {};
+    FRotator manager_component_rotation = {};
+    bool target_view_available = false;
+    bool view_target_transform_available = false;
+    bool component_transform_available = false;
 };
 
 bool ReadAnimState(UObject* actor, AnimState* out);
@@ -80,9 +94,11 @@ float GetAnimationAssetLength(UObject* animation_asset);
 UObject* GetSkeletalMeshComponent(UObject* actor);
 UObject* GetAnimInstance(UObject* actor);
 
-bool GetObjectPathName(UObject* object, char* out, int out_size);
+bool GetObjectPathName(UObject* object, char* out, int out_size,
+                       int* required_size = nullptr);
 
-bool GetObjectClassPathName(UObject* object, char* out, int out_size);
+bool GetObjectClassPathName(UObject* object, char* out, int out_size,
+                            int* required_size = nullptr);
 bool ObjectClassIs(UObject* object, const char* leaf_name);
 
 UObject* FindObjectByPath(const wchar_t* path_name);

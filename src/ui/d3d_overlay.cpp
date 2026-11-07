@@ -153,12 +153,8 @@ LRESULT CALLBACK WndProcHook(HWND window, UINT message, WPARAM wparam, LPARAM lp
 
 void DrawPlaybackTab() {
     const tas::Settings settings = tas::GetSettings();
-    if (ImGui::Button(hooks::IsPaused() ? "Resume" : "Pause",
-                      ImVec2(150.f * settings.gui_scale, 0)))
-        hooks::ActivateAction(tas::Action::PauseResume);
-    ImGui::SameLine();
     ImGui::BeginDisabled(!hooks::IsPaused());
-    if (ImGui::Button("Advance", ImVec2(150.f * settings.gui_scale, 0)))
+    if (ImGui::Button("Frame advance", ImVec2(220.f * settings.gui_scale, 0)))
         hooks::ActivateAction(tas::Action::FrameAdvance);
     ImGui::EndDisabled();
 
@@ -179,40 +175,37 @@ void DrawPlaybackTab() {
 
 void DrawSavestatesTab() {
     const tas::checkpoint::Status status = tas::checkpoint::GetStatus();
-    const float button_width = 220.f * tas::GetSettings().gui_scale;
-    if (ImGui::Button("Save checkpoint (F7)", ImVec2(button_width, 0)))
-        hooks::ActivateAction(tas::Action::SaveCheckpoint);
-    ImGui::SameLine();
-    if (ImGui::Button("Load checkpoint (F8)", ImVec2(button_width, 0)))
-        hooks::ActivateAction(tas::Action::LoadCheckpoint);
-    ImGui::Text("Slot 1: %s", status.exists ? "saved in memory" : "empty");
-    ImGui::Text("Characters captured: %u / %u%s", status.captured_count,
-                status.enumerated_count, status.incomplete ? " (incomplete)" : "");
-    ImGui::Text("Actors: supported fields complete %u, partial %u, skipped %u",
-                status.restored_count, status.partial_count, status.skipped_count);
-    ImGui::TextDisabled("Field-complete does not mean the whole simulation was restored.");
-    ImGui::TextDisabled("Snapshots include the player and current-world FightingCharacters (cap 32).");
-    ImGui::TextDisabled("AI, attack orders, timers, callbacks and down/death transitions remain live.");
-    ImGui::Separator();
-    if (status.exists) {
-        ImGui::TextWrapped("Level: %s", status.reference.level_path);
-        ImGui::Text("Saved engine tick: %llu (simulation frame unverified)",
-                    static_cast<unsigned long long>(status.reference.engine_tick));
-        ImGui::TextWrapped("Player: %s", status.reference.player_identity);
-        if (status.reference.enemy_identity[0])
-            ImGui::TextWrapped("First other character: %s", status.reference.enemy_identity);
-        ImGui::Text("Camera: %s; last restore: %s", status.camera_available ? "captured" : "unavailable",
-                    status.camera_restored ? "verified" : "not verified");
-        ImGui::Text("Cloth reset queued for %u character(s) on last load.",
-                    status.cloth_reset_count);
-        ImGui::TextWrapped("Cloth reset is queued for the next mesh update; saved cloth-particle history is not restored.");
-        ImGui::TextWrapped("Montage position is restored only if that same montage remains active. Blend-tree pose and combat actions are not reconstructed.");
-        if (status.incomplete)
-            ImGui::TextWrapped("Snapshot is incomplete. Check the log for enumeration and per-field availability.");
-    } else {
+    ImGui::TextDisabled("One in-memory checkpoint. Combat AI, actions, and timers remain live.");
+    if (!ImGui::CollapsingHeader("Advanced / diagnostics")) return;
+    ImGui::Text("World actors: %u; active candidates: %u; captured: %u; capacity: 32",
+                status.world_actor_count, status.enumerated_count, status.captured_count);
+    ImGui::Text("Excluded: pooled %u, invalid %u, missing health %u, inactive %u, identity too long %u / unavailable %u, capacity %u",
+                status.pooled_count, status.invalid_count, status.missing_health_count,
+                status.inactive_count, status.identity_truncated_count,
+                status.identity_unavailable_count, status.capacity_skipped_count);
+    ImGui::Text("Restore: fields complete %u, partial %u, skipped %u; snapshot %s",
+                status.restored_count, status.partial_count, status.skipped_count,
+                status.incomplete ? "incomplete" : "complete for supported fields");
+    if (!status.exists) {
         ImGui::TextDisabled("No checkpoint is saved.");
+        return;
     }
-    ImGui::TextWrapped("Last result: %s", status.last_result);
+    ImGui::TextWrapped("Level: %s", status.reference.level_path);
+    ImGui::Text("Saved engine tick: %llu (simulation frame unverified)",
+                static_cast<unsigned long long>(status.reference.engine_tick));
+    ImGui::Text("Camera: %s; last restore: %s; cloth reset queued: %u",
+                status.camera_available ? "captured" : "unavailable",
+                status.camera_restored ? "verified" : "not verified",
+                status.cloth_reset_count);
+    ImGui::TextDisabled("Cloth particle history, blend-tree pose, combat actions, AI, timers, and callbacks are not restored.");
+    for (std::uint32_t i = 0; i < status.actor_count; ++i) {
+        const auto& actor = status.actors[i];
+        ImGui::TextWrapped("%s: %s", actor.player ? "Player" : "Actor", actor.identity);
+        ImGui::Text("  fields captured=%03X restored=%03X failed=%03X unsupported=%03X unavailable=%03X%s",
+                    actor.captured_fields, actor.restored_fields, actor.failed_fields,
+                    actor.unsupported_fields, actor.unavailable_fields,
+                    actor.skipped ? " skipped" : "");
+    }
 }
 
 void DrawRecordingTab() {
@@ -280,6 +273,23 @@ void DrawMenu() {
         ImGui::End();
         return;
     }
+    const float scale = settings.gui_scale;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float button_width = (ImGui::GetContentRegionAvail().x - spacing * 2.f) / 3.f;
+    if (ImGui::Button(hooks::IsPaused() ? "Resume" : "Pause",
+                      ImVec2(button_width, 38.f * scale)))
+        hooks::ActivateAction(tas::Action::PauseResume);
+    ImGui::SameLine();
+    if (ImGui::Button("Save checkpoint",
+                      ImVec2(button_width, 38.f * scale)))
+        hooks::ActivateAction(tas::Action::SaveCheckpoint);
+    ImGui::SameLine();
+    if (ImGui::Button("Load checkpoint",
+                      ImVec2(button_width, 38.f * scale)))
+        hooks::ActivateAction(tas::Action::LoadCheckpoint);
+    const auto checkpoint_status = tas::checkpoint::GetStatus();
+    ImGui::TextWrapped("%s", checkpoint_status.last_result);
+    ImGui::Separator();
     if (ImGui::BeginTabBar("sifutas-tabs")) {
         if (ImGui::BeginTabItem("Playback")) {
             DrawPlaybackTab();

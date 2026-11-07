@@ -83,9 +83,14 @@ WANTED = {
     "UObjectBaseUtility_GetPathName": [
         "?GetPathName@UObjectBaseUtility@@QEBAXPEBVUObject@@AEAVFString@@@Z"
     ],
+    "FMemory_Free": ["?Free@FMemory@@SAXPEAX@Z"],
+    "UWGGameplayStatics_BPF_IsGameOver": [
+        "?BPF_IsGameOver@UWGGameplayStatics@@SA_NPEAVUObject@@@Z"
+    ],
 
     "UGameplayStatics_GetPlayerCharacter": ["?GetPlayerCharacter@UGameplayStatics@@"],
     "UGameplayStatics_OpenLevel": ["?OpenLevel@UGameplayStatics@@SAXPEBVUObject@@VFName@@_NVFString@@@Z"],
+    "UWorld_IsInSeamlessTravel": ["?IsInSeamlessTravel@UWorld@@QEAA_NXZ"],
 
     "UGameplayStatics_GetAllActorsOfClass": ["?GetAllActorsOfClass@UGameplayStatics@@SA"],
     "AFightingCharacter_StaticClass": ["?StaticClass@AFightingCharacter@@SA"],
@@ -296,6 +301,7 @@ WANTED_MEMBERS = {
     "M_UHealthComponent_fMaxHealth": ("UHealthComponent", "m_fMaxHealth"),
     "M_UCharacterHealthComponent_fGhostDamage": ("UCharacterHealthComponent",
                                                  "m_fGhostDamage"),
+    "M_UCharacterHealthComponent_eDownState": ("UCharacterHealthComponent", "m_eDownState"),
     "M_UDefenseComponent_fCurrentGuard": ("UDefenseComponent", "m_fCurrentGuard"),
     "M_AFightingCharacter_eFaction": ("AFightingCharacter", "m_eFaction"),
     "M_AFightingCharacter_HealthComponent": ("AFightingCharacter", "m_HealthComponent"),
@@ -326,6 +332,14 @@ WANTED_MEMBERS = {
                                                    "CameraCachePrivate"),
     "M_APlayerCameraManager_LastFrameCameraCachePrivate": (
         "APlayerCameraManager", "LastFrameCameraCachePrivate"),
+    "M_APlayerCameraManager_ViewTarget": ("APlayerCameraManager", "ViewTarget"),
+    "M_APlayerCameraManager_PendingViewTarget": ("APlayerCameraManager", "PendingViewTarget"),
+    "M_APlayerCameraManager_ViewTargetOffset": ("APlayerCameraManager", "ViewTargetOffset"),
+    "M_APlayerCameraManager_TransformComponent": ("APlayerCameraManager", "TransformComponent"),
+    "M_FTViewTarget_Target": ("FTViewTarget", "Target"),
+    "M_FTViewTarget_POV": ("FTViewTarget", "POV"),
+    "M_UWorld_OwningGameInstance": ("UWorld", "OwningGameInstance"),
+    "M_UThePlainesGameInstance_loadingScreen": ("UThePlainesGameInstance", "m_loadingScreen"),
     "M_FCameraCacheEntry_POV": ("FCameraCacheEntry", "POV"),
     "M_FMinimalViewInfo_Location": ("FMinimalViewInfo", "Location"),
     "M_FMinimalViewInfo_Rotation": ("FMinimalViewInfo", "Rotation"),

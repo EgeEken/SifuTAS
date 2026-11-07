@@ -41,11 +41,22 @@ enum Field : std::uint32_t {
 
 constexpr std::uint32_t kAllCaptureFields = (1u << 10) - 1u;
 constexpr std::uint32_t kVitalsFields = Health | MaxHealth | Guard;
+constexpr int kIdentitySize = 512;
+constexpr int kClassPathSize = 256;
+
+enum class CaptureFailure {
+    None,
+    InvalidActor,
+    IdentityUnavailable,
+    IdentityTruncated,
+    ClassPathUnavailable,
+    ClassPathTruncated,
+};
 
 struct ActorState {
     ue::UObject* actor = nullptr;
-    char identity[128] = {};
-    char class_path[160] = {};
+    char identity[kIdentitySize] = {};
+    char class_path[kClassPathSize] = {};
     std::uint32_t fields = 0;
     bool player = false;
     ue::FVector location = {};
@@ -66,6 +77,14 @@ struct Snapshot {
     ue::UObject* world = nullptr;
     int character_count = 0;
     int enumerated_count = 0;
+    int world_actor_count = 0;
+    int pooled_count = 0;
+    int invalid_count = 0;
+    int missing_health_count = 0;
+    int inactive_count = 0;
+    int identity_truncated_count = 0;
+    int identity_unavailable_count = 0;
+    int capacity_skipped_count = 0;
     int player_index = -1;
     bool camera_available = false;
     ue::PlayerCameraState camera = {};
@@ -77,6 +96,8 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 Snapshot g_snapshot = {};
 Status g_status = {};
 std::atomic<std::uint32_t> g_requests{0};
+bool g_camera_diagnostics_pending = false;
+unsigned int g_camera_diagnostic_frame = 0;
 
 bool Finite(const ue::FVector& value) {
     return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
@@ -95,6 +116,36 @@ bool CopyString(char* out, int size, const char* value) {
     return true;
 }
 
+void LogCameraState(const char* stage, const ue::PlayerCameraState& state) {
+    SC_LOG("tas: checkpoint camera stage=%s controller=%p control=%.2f,%.2f,%.2f "
+           "current=%.1f,%.1f,%.1f/%.2f,%.2f,%.2f/%.2f "
+           "previous=%.1f,%.1f,%.1f/%.2f,%.2f,%.2f/%.2f "
+           "view_target=%p pending_target=%p target_view_valid=%u "
+           "target_transform_valid=%u target_transform=%.1f,%.1f,%.1f/%.2f,%.2f,%.2f "
+           "target=%.1f,%.1f,%.1f/%.2f,%.2f,%.2f/%.2f offset=%.1f,%.1f,%.1f "
+           "transform_component=%p component_valid=%u component=%.1f,%.1f,%.1f/%.2f,%.2f,%.2f",
+           stage, state.controller, state.control_rotation.Pitch, state.control_rotation.Yaw,
+           state.control_rotation.Roll, state.current.location.X, state.current.location.Y,
+           state.current.location.Z, state.current.rotation.Pitch, state.current.rotation.Yaw,
+           state.current.rotation.Roll, state.current.fov, state.previous.location.X,
+           state.previous.location.Y, state.previous.location.Z, state.previous.rotation.Pitch,
+           state.previous.rotation.Yaw, state.previous.rotation.Roll, state.previous.fov,
+           state.view_target, state.pending_view_target, state.target_view_available ? 1u : 0u,
+           state.view_target_transform_available ? 1u : 0u,
+           state.view_target_location.X, state.view_target_location.Y,
+           state.view_target_location.Z, state.view_target_rotation.Pitch,
+           state.view_target_rotation.Yaw, state.view_target_rotation.Roll,
+           state.target_view.location.X, state.target_view.location.Y,
+           state.target_view.location.Z, state.target_view.rotation.Pitch,
+           state.target_view.rotation.Yaw, state.target_view.rotation.Roll,
+           state.target_view.fov, state.view_target_offset.X, state.view_target_offset.Y,
+           state.view_target_offset.Z, state.transform_component,
+           state.component_transform_available ? 1u : 0u, state.manager_component_location.X,
+           state.manager_component_location.Y, state.manager_component_location.Z,
+           state.manager_component_rotation.Pitch, state.manager_component_rotation.Yaw,
+           state.manager_component_rotation.Roll);
+}
+
 void SetResult(const char* operation, const char* message) {
     AcquireSRWLockExclusive(&g_lock);
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
@@ -103,13 +154,29 @@ void SetResult(const char* operation, const char* message) {
     SC_LOG("tas: checkpoint %s: %s", operation, message);
 }
 
-bool CaptureActor(ue::UObject* actor, bool player, ActorState* out) {
-    if (!ue::IsAliveObject(actor) || !out) return false;
+bool CaptureActor(ue::UObject* actor, bool player, ActorState* out,
+                  CaptureFailure* failure) {
+    *failure = CaptureFailure::None;
+    if (!ue::IsAliveObject(actor) || !out) {
+        *failure = CaptureFailure::InvalidActor;
+        return false;
+    }
     out->actor = actor;
     out->player = player;
-    if (!ue::GetObjectPathName(actor, out->identity, sizeof(out->identity)) ||
-        !ue::GetObjectClassPathName(actor, out->class_path, sizeof(out->class_path)))
+    int required = 0;
+    if (!ue::GetObjectPathName(actor, out->identity, sizeof(out->identity), &required)) {
+        *failure = required > static_cast<int>(sizeof(out->identity))
+                       ? CaptureFailure::IdentityTruncated
+                       : CaptureFailure::IdentityUnavailable;
         return false;
+    }
+    if (!ue::GetObjectClassPathName(actor, out->class_path, sizeof(out->class_path),
+                                    &required)) {
+        *failure = required > static_cast<int>(sizeof(out->class_path))
+                       ? CaptureFailure::ClassPathTruncated
+                       : CaptureFailure::ClassPathUnavailable;
+        return false;
+    }
 
     if (ue::GetActorLocation(actor, &out->location) && Finite(out->location))
         out->fields |= Location;
@@ -164,13 +231,19 @@ bool AppendActor(Snapshot* snapshot, ue::UObject* actor, bool player) {
     }
     if (snapshot->character_count >= kMaxCharacters) {
         snapshot->incomplete = true;
+        ++snapshot->capacity_skipped_count;
         return false;
     }
     ActorState& state = snapshot->characters[snapshot->character_count];
-    if (!CaptureActor(actor, player, &state)) {
+    CaptureFailure failure = CaptureFailure::None;
+    if (!CaptureActor(actor, player, &state, &failure)) {
         snapshot->incomplete = true;
-        SC_LOG("tas: checkpoint capture skipped unidentified actor player=%u",
-               player ? 1u : 0u);
+        if (failure == CaptureFailure::InvalidActor) ++snapshot->invalid_count;
+        else if (failure == CaptureFailure::IdentityTruncated ||
+                 failure == CaptureFailure::ClassPathTruncated)
+            ++snapshot->identity_truncated_count;
+        else
+            ++snapshot->identity_unavailable_count;
         return true;
     }
     if (state.fields != kAllCaptureFields) snapshot->incomplete = true;
@@ -182,10 +255,6 @@ bool AppendActor(Snapshot* snapshot, ue::UObject* actor, bool player) {
 bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
     const bool have_level = ue::GetCurrentLevelPath(level, level_size);
     if (!have_level) lstrcpynA(level, "<unavailable>", level_size);
-    if (!hooks::IsPaused()) {
-        *error = "pause the simulation before saving (F1)";
-        return false;
-    }
     if (!have_level) {
         *error = "current world level identity could not be read";
         return false;
@@ -197,8 +266,9 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
         return false;
     }
     ue::UObject* player = ue::GetPlayerCharacter(world, 0);
-    if (!ue::IsAliveObject(player)) {
-        *error = "player character is unavailable";
+    if (!game::CheckpointGameplayState(world, player, error)) return false;
+    if (!hooks::IsPaused()) {
+        *error = "pause the simulation before saving (F1)";
         return false;
     }
 
@@ -213,6 +283,7 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
         *error = "player identity could not be captured";
         return false;
     }
+    snapshot.enumerated_count = 1;
 
     ue::UObject* fighters[kEnumerationBuffer] = {};
     int fighter_count = 0;
@@ -223,21 +294,44 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
         snapshot.incomplete = true;
         SC_LOG("tas: checkpoint character enumeration unavailable; saving player snapshot only");
     } else {
-        snapshot.enumerated_count = fighter_total;
+        snapshot.world_actor_count = fighter_total;
         for (int i = 0; i < fighter_count; ++i) {
-            AppendActor(&snapshot, fighters[i], false);
+            ue::UObject* actor = fighters[i];
+            if (actor == player) continue;
+            if (!ue::IsAliveObject(actor)) {
+                ++snapshot.invalid_count;
+                continue;
+            }
+            ue::FVector location = {};
+            if (!ue::GetActorLocation(actor, &location) || !Finite(location)) {
+                ++snapshot.invalid_count;
+                continue;
+            }
+            if (game::IsPooled(location)) {
+                ++snapshot.pooled_count;
+                continue;
+            }
+            const game::Fighter fighter = game::ResolveFighter(actor);
+            if (!fighter.health || !ue::IsAliveObject(fighter.health)) {
+                ++snapshot.missing_health_count;
+                continue;
+            }
+            const float health = game::GetHealth(fighter);
+            if (!std::isfinite(health) || health <= 0.5f) {
+                ++snapshot.inactive_count;
+                continue;
+            }
+            ++snapshot.enumerated_count;
+            AppendActor(&snapshot, actor, false);
         }
         if (fighter_total > fighter_count) snapshot.incomplete = true;
-        bool player_enumerated = false;
-        for (int i = 0; i < fighter_count; ++i)
-            if (fighters[i] == player) player_enumerated = true;
-        if (!player_enumerated) ++snapshot.enumerated_count;
     }
 
     if (snapshot.enumerated_count < snapshot.character_count)
         snapshot.enumerated_count = snapshot.character_count;
-    if (snapshot.character_count >= kMaxCharacters &&
-        snapshot.enumerated_count > snapshot.character_count)
+    if (snapshot.capacity_skipped_count || snapshot.identity_truncated_count ||
+        snapshot.identity_unavailable_count || snapshot.missing_health_count ||
+        snapshot.invalid_count)
         snapshot.incomplete = true;
 
     snapshot.camera_available = ue::ReadPlayerCameraState(world, &snapshot.camera);
@@ -290,8 +384,8 @@ bool SameVector(const ue::FVector& a, const ue::FVector& b) {
 
 bool ActorIdentityMatches(const ActorState& state) {
     if (!state.actor || !ue::IsAliveObject(state.actor)) return false;
-    char identity[128] = {};
-    char class_path[160] = {};
+    char identity[kIdentitySize] = {};
+    char class_path[kClassPathSize] = {};
     return ue::GetObjectPathName(state.actor, identity, sizeof(identity)) &&
            ue::GetObjectClassPathName(state.actor, class_path, sizeof(class_path)) &&
            strcmp(identity, state.identity) == 0 &&
@@ -316,7 +410,13 @@ bool VerifyTransform(ue::UObject* actor, const ActorState& state,
 void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
                   int* restored_count, int* partial_count, int* skipped_count,
                   int* cloth_reset_count, ue::UObject* const* fighters,
-                  int fighter_count, bool fighters_available) {
+                  int fighter_count, bool fighters_available,
+                  ActorDiagnostic* diagnostic) {
+    if (diagnostic) {
+        lstrcpynA(diagnostic->identity, state.identity, sizeof(diagnostic->identity));
+        diagnostic->captured_fields = state.fields;
+        diagnostic->player = state.player;
+    }
     const char* reason = "";
     if (!ActorIdentityMatches(state)) {
         reason = "actor missing or UObject identity/class changed";
@@ -337,6 +437,7 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
     }
     if (reason[0]) {
         ++*skipped_count;
+        if (diagnostic) diagnostic->skipped = true;
         SC_LOG("tas: checkpoint restore actor[%d] '%s' skipped: %s", index,
                state.identity, reason);
         return;
@@ -484,6 +585,12 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
         SC_LOG("tas: checkpoint restore actor[%d] '%s' restored fields=%03X",
                index, state.identity, restored);
     }
+    if (diagnostic) {
+        diagnostic->restored_fields = restored;
+        diagnostic->failed_fields = failed;
+        diagnostic->unsupported_fields = unsupported;
+        diagnostic->unavailable_fields = missing;
+    }
 }
 
 void SaveCheckpoint() {
@@ -509,27 +616,40 @@ void SaveCheckpoint() {
     g_status.skipped_count = 0;
     g_status.partial_count = 0;
     g_status.cloth_reset_count = 0;
+    g_status.world_actor_count = snapshot.world_actor_count;
+    g_status.pooled_count = snapshot.pooled_count;
+    g_status.invalid_count = snapshot.invalid_count;
+    g_status.missing_health_count = snapshot.missing_health_count;
+    g_status.inactive_count = snapshot.inactive_count;
+    g_status.identity_truncated_count = snapshot.identity_truncated_count;
+    g_status.identity_unavailable_count = snapshot.identity_unavailable_count;
+    g_status.capacity_skipped_count = snapshot.capacity_skipped_count;
+    g_status.actor_count = snapshot.character_count;
+    for (int i = 0; i < snapshot.character_count; ++i) {
+        ActorDiagnostic& actor = g_status.actors[i];
+        actor = {};
+        lstrcpynA(actor.identity, snapshot.characters[i].identity, sizeof(actor.identity));
+        actor.captured_fields = snapshot.characters[i].fields;
+        actor.player = snapshot.characters[i].player;
+    }
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
-                "Saved %d of %d discovered characters%s. Simulation actions are not serialized.",
-                snapshot.character_count, snapshot.enumerated_count,
-                snapshot.incomplete ? " (incomplete snapshot)" : "");
+                snapshot.incomplete ? "Saved partial checkpoint - %d / %d active actors"
+                                    : "Checkpoint saved - %d actors",
+                snapshot.character_count, snapshot.enumerated_count);
     ReleaseSRWLockExclusive(&g_lock);
 
     SC_LOG("tas: checkpoint saved level='%s' tick=%llu characters=%d discovered=%d "
+           "world_actors=%d pooled=%d invalid=%d missing_health=%d inactive=%d "
+           "identity_truncated=%d identity_unavailable=%d capacity_skipped=%d "
            "capacity=%d incomplete=%u camera=%u snapshot_bytes=%llu", snapshot.reference.level_path,
            static_cast<unsigned long long>(snapshot.reference.engine_tick),
-           snapshot.character_count, snapshot.enumerated_count, kMaxCharacters,
+           snapshot.character_count, snapshot.enumerated_count, snapshot.world_actor_count,
+           snapshot.pooled_count, snapshot.invalid_count, snapshot.missing_health_count,
+           snapshot.inactive_count, snapshot.identity_truncated_count,
+           snapshot.identity_unavailable_count, snapshot.capacity_skipped_count, kMaxCharacters,
            snapshot.incomplete ? 1u : 0u, snapshot.camera_available ? 1u : 0u,
            static_cast<unsigned long long>(sizeof(Snapshot)));
-    if (snapshot.camera_available) {
-        SC_LOG("tas: checkpoint camera captured control_rot=%.2f,%.2f,%.2f "
-               "view=%.1f,%.1f,%.1f rot=%.2f,%.2f,%.2f fov=%.2f",
-               snapshot.camera.control_rotation.Pitch, snapshot.camera.control_rotation.Yaw,
-               snapshot.camera.control_rotation.Roll, snapshot.camera.current.location.X,
-               snapshot.camera.current.location.Y, snapshot.camera.current.location.Z,
-               snapshot.camera.current.rotation.Pitch, snapshot.camera.current.rotation.Yaw,
-               snapshot.camera.current.rotation.Roll, snapshot.camera.current.fov);
-    }
+    if (snapshot.camera_available) LogCameraState("capture", snapshot.camera);
     for (int i = 0; i < snapshot.character_count; ++i) {
         const ActorState& state = snapshot.characters[i];
         SC_LOG("tas: checkpoint capture actor[%d] role=%s path='%s' class='%s' "
@@ -558,6 +678,16 @@ void InvalidateSnapshot(const char* error) {
     g_status.skipped_count = 0;
     g_status.partial_count = 0;
     g_status.cloth_reset_count = 0;
+    g_status.world_actor_count = 0;
+    g_status.pooled_count = 0;
+    g_status.invalid_count = 0;
+    g_status.missing_health_count = 0;
+    g_status.inactive_count = 0;
+    g_status.identity_truncated_count = 0;
+    g_status.identity_unavailable_count = 0;
+    g_status.capacity_skipped_count = 0;
+    g_status.actor_count = 0;
+    for (auto& actor : g_status.actors) actor = {};
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
                 "Load invalidated: %s", error);
     ReleaseSRWLockExclusive(&g_lock);
@@ -592,11 +722,23 @@ void LoadCheckpoint() {
         InvalidateSnapshot("level identity changed");
         return;
     }
+    ue::UObject* player = ue::GetPlayerCharacter(world, 0);
+    const char* gameplay_error = nullptr;
+    if (!game::CheckpointGameplayState(world, player, &gameplay_error)) {
+        SetResult("load refused", gameplay_error ? gameplay_error
+                                                   : "player/game state unavailable");
+        return;
+    }
+    if (!hooks::IsPaused()) {
+        SetResult("load refused", "pause the simulation before loading (F1)");
+        return;
+    }
 
     int restored_count = 0;
     int partial_count = 0;
     int skipped_count = 0;
     int cloth_reset_count = 0;
+    ActorDiagnostic actor_diagnostics[kMaxCharacters] = {};
     bool camera_restored = false;
     ue::UObject* current_fighters[256] = {};
     int current_fighter_count = 0;
@@ -612,18 +754,25 @@ void LoadCheckpoint() {
     SC_LOG("tas: checkpoint load requested tick=%llu characters=%d discovered=%d incomplete=%u",
            static_cast<unsigned long long>(hooks::FrameCount()), snapshot.character_count,
            snapshot.enumerated_count, snapshot.incomplete ? 1u : 0u);
+    ue::PlayerCameraState before_camera = {};
+    const bool have_before_camera = snapshot.camera_available &&
+                                    ue::ReadPlayerCameraState(world, &before_camera);
+    if (have_before_camera) LogCameraState("before_load", before_camera);
     for (int i = 0; i < snapshot.character_count; ++i) {
         RestoreActor(snapshot, snapshot.characters[i], i, &restored_count,
                      &partial_count, &skipped_count, &cloth_reset_count,
-                     current_fighters, current_fighter_count, fighters_available);
+                     current_fighters, current_fighter_count, fighters_available,
+                     &actor_diagnostics[i]);
     }
 
     if (snapshot.camera_available) {
-        ue::PlayerCameraState current_camera = {};
-        camera_restored = ue::ReadPlayerCameraState(world, &current_camera) &&
-                          current_camera.controller == snapshot.camera.controller &&
-                          current_camera.manager == snapshot.camera.manager &&
+        camera_restored = have_before_camera &&
+                          before_camera.controller == snapshot.camera.controller &&
+                          before_camera.manager == snapshot.camera.manager &&
                           ue::RestorePlayerCameraState(snapshot.camera);
+        ue::PlayerCameraState after_camera = {};
+        if (ue::ReadPlayerCameraState(world, &after_camera))
+            LogCameraState("after_load", after_camera);
         SC_LOG("tas: checkpoint camera restore=%s",
                camera_restored ? "verified" : "failed");
     }
@@ -633,13 +782,21 @@ void LoadCheckpoint() {
     g_status.partial_count = partial_count;
     g_status.skipped_count = skipped_count;
     g_status.cloth_reset_count = cloth_reset_count;
+    g_status.actor_count = snapshot.character_count;
+    for (int i = 0; i < snapshot.character_count; ++i) {
+        g_status.actors[i] = actor_diagnostics[i];
+        g_status.actors[i].captured_fields = snapshot.characters[i].fields;
+    }
     g_status.camera_available = snapshot.camera_available;
     g_status.camera_restored = camera_restored;
     _snprintf_s(g_status.last_result, sizeof(g_status.last_result), _TRUNCATE,
-                "Fields: restored=%d partial=%d skipped=%d; camera=%s cloth-reset=%d. Paused; AI/actions remain live.",
-                restored_count, partial_count, skipped_count,
-                camera_restored ? "restored" : "unavailable", cloth_reset_count);
+                "Partial restore - %d actors; combat state remains live",
+                restored_count + partial_count);
     ReleaseSRWLockExclusive(&g_lock);
+    if (camera_restored) {
+        g_camera_diagnostics_pending = true;
+        g_camera_diagnostic_frame = 0;
+    }
     SC_LOG("tas: checkpoint load finished restored=%d partial=%d skipped=%d "
            "camera=%s cloth_reset=%d snapshot_incomplete=%u; AI/combat actions remain live",
            restored_count, partial_count, skipped_count,
@@ -677,6 +834,24 @@ void ProcessRequests() {
                    1000.0 * static_cast<double>(end.QuadPart - start.QuadPart) /
                        static_cast<double>(frequency.QuadPart));
     }
+}
+
+void TickCameraDiagnostics() {
+    if (!g_camera_diagnostics_pending || hooks::IsPaused()) return;
+    ue::UObject* world = ue::GetWorld();
+    ue::PlayerCameraState state = {};
+    if (!world || !ue::ReadPlayerCameraState(world, &state)) {
+        SC_LOG("tas: checkpoint camera stage=postresume_%u unavailable",
+               g_camera_diagnostic_frame + 1);
+        g_camera_diagnostics_pending = false;
+        return;
+    }
+    ++g_camera_diagnostic_frame;
+    char stage[32] = {};
+    _snprintf_s(stage, sizeof(stage), _TRUNCATE, "postresume_%u",
+                g_camera_diagnostic_frame);
+    LogCameraState(stage, state);
+    if (g_camera_diagnostic_frame >= 6) g_camera_diagnostics_pending = false;
 }
 
 Status GetStatus() {

@@ -24,11 +24,13 @@ using MontageGetPositionFn = float(__fastcall*)(const UObject*, const UObject*);
 using MontagePlayFn = float(__fastcall*)(UObject*, UObject*, float, int, float, bool);
 using GetPathNameFn = void(__fastcall*)(const UObject* self, const UObject* stop_outer,
                                         void* out_string);
+using FreeFn = void(__fastcall*)(void* memory);
 using StaticFindObjectSafeFn = UObject*(__fastcall*)(void* uclass, UObject* outer,
                                                      const wchar_t* name, bool exact_class);
 
 using OpenLevelFn = void(__fastcall*)(const UObject* world_context, FName level,
                                       bool absolute, void* options);
+using IsInSeamlessTravelFn = bool(__fastcall*)(UObject* world);
 
 FNameCtorFn g_fname_ctor = nullptr;
 FindFunctionFn g_find_function = nullptr;
@@ -38,8 +40,10 @@ StaticClassFn g_skeletal_mesh_class = nullptr;
 MontageGetPositionFn g_montage_get_position = nullptr;
 MontagePlayFn g_montage_play = nullptr;
 GetPathNameFn g_get_path_name = nullptr;
+FreeFn g_free = nullptr;
 StaticFindObjectSafeFn g_static_find_object_safe = nullptr;
 OpenLevelFn g_open_level = nullptr;
+IsInSeamlessTravelFn g_is_in_seamless_travel = nullptr;
 UObject** g_gworld = nullptr;
 
 bool g_ready = false;
@@ -139,6 +143,22 @@ bool SameCameraView(const CameraView& a, const CameraView& b) {
            std::fabs(a.fov - b.fov) <= 0.1f;
 }
 
+bool ReadViewTarget(UObject* manager, std::uint32_t offset, UObject** target,
+                    CameraView* view) {
+    if (!offset ||
+        !ReadOffset(manager, offset + offsets::M_FTViewTarget_Target, target))
+        return false;
+    if (!view || !offsets::M_FTViewTarget_POV) return true;
+    const std::uint32_t pov = offset + offsets::M_FTViewTarget_POV;
+    return ReadOffset(manager, pov + offsets::M_FMinimalViewInfo_Location, &view->location) &&
+           ReadOffset(manager, pov + offsets::M_FMinimalViewInfo_Rotation, &view->rotation) &&
+           ReadOffset(manager, pov + offsets::M_FMinimalViewInfo_FOV, &view->fov) &&
+           std::isfinite(view->location.X) && std::isfinite(view->location.Y) &&
+           std::isfinite(view->location.Z) && std::isfinite(view->rotation.Pitch) &&
+           std::isfinite(view->rotation.Yaw) && std::isfinite(view->rotation.Roll) &&
+           std::isfinite(view->fov);
+}
+
 UObject* GetPlayerController(UObject* world) {
     UObject* statics = FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");
     if (!world || !statics) return nullptr;
@@ -168,13 +188,16 @@ bool InitReflection(std::uintptr_t base) {
         Resolve<MontageGetPositionFn>(base, offsets::UAnimInstance_Montage_GetPosition);
     g_montage_play = Resolve<MontagePlayFn>(base, offsets::UAnimInstance_Montage_Play);
     g_get_path_name = Resolve<GetPathNameFn>(base, offsets::UObjectBaseUtility_GetPathName);
+    g_free = Resolve<FreeFn>(base, offsets::FMemory_Free);
     g_static_find_object_safe =
         Resolve<StaticFindObjectSafeFn>(base, offsets::StaticFindObjectSafe);
     g_open_level = Resolve<OpenLevelFn>(base, offsets::UGameplayStatics_OpenLevel);
+    g_is_in_seamless_travel =
+        Resolve<IsInSeamlessTravelFn>(base, offsets::UWorld_IsInSeamlessTravel);
     g_gworld = Resolve<UObject**>(base, offsets::GWorld);
 
     g_ready = g_fname_ctor && g_find_function && g_process_event && g_get_player_character &&
-              g_gworld && g_get_path_name && g_static_find_object_safe;
+              g_gworld && g_get_path_name && g_free && g_static_find_object_safe;
     SC_LOG("reflection: %s", g_ready ? "ready" : "FAILED to resolve entry points");
     return g_ready;
 }
@@ -225,8 +248,37 @@ UObject* GetWorld() {
     return *g_gworld;
 }
 
-bool GetObjectPathName(UObject* object, char* out, int out_size) {
-    if (!g_get_path_name || !object || out_size <= 0) return false;
+bool IsWorldInSeamlessTravel(UObject* world) {
+    return world && g_is_in_seamless_travel && g_is_in_seamless_travel(world);
+}
+
+bool ReadWorldTransitionState(UObject* world, bool* transitioning) {
+    if (!world || !transitioning || !g_is_in_seamless_travel ||
+        !offsets::M_UWorld_OwningGameInstance ||
+        !offsets::M_UThePlainesGameInstance_loadingScreen || !IsValidObject(world))
+        return false;
+    bool in_transition = IsWorldInSeamlessTravel(world);
+    UObject* game_instance = nullptr;
+    if (!ReadOffset(world, offsets::M_UWorld_OwningGameInstance, &game_instance) ||
+        !IsAliveObject(game_instance))
+        return false;
+    UObject* loading_screen = nullptr;
+    if (!ReadOffset(game_instance, offsets::M_UThePlainesGameInstance_loadingScreen,
+                    &loading_screen))
+        return false;
+    if (loading_screen) {
+        if (!IsAliveObject(loading_screen)) return false;
+        struct Params { bool ReturnValue; } params = {};
+        if (!CallFunction(loading_screen, L"IsInViewport", &params)) return false;
+        in_transition = in_transition || params.ReturnValue;
+    }
+    *transitioning = in_transition;
+    return true;
+}
+
+bool GetObjectPathName(UObject* object, char* out, int out_size, int* required_size) {
+    if (required_size) *required_size = 0;
+    if (!g_get_path_name || !g_free || !object || !out || out_size <= 0) return false;
 
     struct FString {
         wchar_t* data;
@@ -236,12 +288,21 @@ bool GetObjectPathName(UObject* object, char* out, int out_size) {
 
     g_get_path_name(object, nullptr, &result);
 
-    if (!result.data || result.num <= 0) return false;
+    if (!result.data) return false;
+    if (result.num <= 0) {
+        g_free(result.data);
+        return false;
+    }
 
-    const int written = WideCharToMultiByte(CP_UTF8, 0, result.data, -1, out, out_size, nullptr,
-                                            nullptr);
-    out[out_size - 1] = '\0';
-    return written > 0;
+    const int required = WideCharToMultiByte(CP_UTF8, 0, result.data, -1, nullptr, 0, nullptr,
+                                             nullptr);
+    if (required_size) *required_size = required;
+    const bool converted = required > 0 && required <= out_size &&
+                           WideCharToMultiByte(CP_UTF8, 0, result.data, -1, out, out_size,
+                                               nullptr, nullptr) == required;
+    if (!converted) out[0] = '\0';
+    g_free(result.data);
+    return converted;
 }
 
 UObject* FindObjectByPath(const wchar_t* path_name) {
@@ -250,10 +311,8 @@ UObject* FindObjectByPath(const wchar_t* path_name) {
     return g_static_find_object_safe(nullptr, nullptr, path_name, false);
 }
 
-// GetPathName hands back an FString allocated by the engine that nothing here
-// can free (no allocator entry point is resolved), so every call leaks its
-// buffer. This ran up to three times a frame; the answer only changes with the
-// world, so it is cached against the world pointer.
+// The level path is cached per world because it does not change during that
+// world's lifetime.
 bool GetCurrentLevelPath(char* out, int out_size) {
     UObject* world = GetWorld();
     if (!world) return false;
@@ -394,6 +453,35 @@ bool ReadPlayerCameraState(UObject* world, PlayerCameraState* out) {
         !ReadCameraView(manager, offsets::M_APlayerCameraManager_LastFrameCameraCachePrivate,
                         &state.previous))
         return false;
+    if (offsets::M_APlayerCameraManager_ViewTarget && offsets::M_FTViewTarget_POV) {
+        state.target_view_available = ReadViewTarget(
+            manager, offsets::M_APlayerCameraManager_ViewTarget, &state.view_target,
+            &state.target_view);
+        if (state.view_target && IsAliveObject(state.view_target)) {
+            state.view_target_transform_available =
+                GetActorLocation(state.view_target, &state.view_target_location) &&
+                GetActorRotation(state.view_target, &state.view_target_rotation);
+        }
+        ReadViewTarget(manager, offsets::M_APlayerCameraManager_PendingViewTarget,
+                       &state.pending_view_target, nullptr);
+    }
+    ReadOffset(manager, offsets::M_APlayerCameraManager_ViewTargetOffset,
+               &state.view_target_offset);
+    if (offsets::M_APlayerCameraManager_TransformComponent) {
+        ReadOffset(manager, offsets::M_APlayerCameraManager_TransformComponent,
+                   &state.transform_component);
+        if (state.transform_component && IsAliveObject(state.transform_component)) {
+            struct VectorParams { FVector ReturnValue; } location = {};
+            struct RotationParams { FRotator ReturnValue; } rotation = {};
+            state.component_transform_available =
+                CallFunction(state.transform_component, L"K2_GetComponentLocation", &location) &&
+                CallFunction(state.transform_component, L"K2_GetComponentRotation", &rotation);
+            if (state.component_transform_available) {
+                state.manager_component_location = location.ReturnValue;
+                state.manager_component_rotation = rotation.ReturnValue;
+            }
+        }
+    }
     *out = state;
     return true;
 }
@@ -494,12 +582,12 @@ bool PlayAnimationAsset(UObject* actor, UObject* animation_asset, float start_at
     return params.ReturnValue != nullptr;
 }
 
-bool GetObjectClassPathName(UObject* object, char* out, int out_size) {
+bool GetObjectClassPathName(UObject* object, char* out, int out_size, int* required_size) {
     if (!object || !out || out_size <= 0) return false;
     out[0] = 0;
     auto* klass = *reinterpret_cast<UObject**>(reinterpret_cast<std::uintptr_t>(object) + 0x10);
     if (!klass) return false;
-    return GetObjectPathName(klass, out, out_size);
+    return GetObjectPathName(klass, out, out_size, required_size);
 }
 
 bool ObjectClassIs(UObject* object, const char* leaf_name) {

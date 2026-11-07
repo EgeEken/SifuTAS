@@ -11,6 +11,7 @@
 #include "../../third_party/minhook/include/MinHook.h"
 
 #include "../game/enemies.h"
+#include "../game/actors.h"
 #include "../game/orders.h"
 #include "../game/puppet.h"
 #include "../game/replay.h"
@@ -408,6 +409,7 @@ void OnFrame() {
     start = PerfNow();
     sifucoop::tas::checkpoint::ProcessRequests();
     AddPerf(PerfCheckpoint, PerfNow() - start);
+    sifucoop::tas::checkpoint::TickCameraDiagnostics();
     start = PerfNow();
     SampleTimeDilation();
     AddPerf(PerfDilation, PerfNow() - start);
@@ -667,11 +669,19 @@ void ActivateAction(tas::Action action) {
             if (!ui::IsMenuOpen()) {
                 g_gui_pause_owned = false;
                 if (!g_paused.load(std::memory_order_relaxed)) {
-                    ActivateAction(tas::Action::PauseResume);
-                    if (g_paused.load(std::memory_order_relaxed)) {
-                        g_gui_pause_owned = true;
-                        g_gui_pause_serial =
-                            g_pause_change_serial.load(std::memory_order_relaxed);
+                    ue::UObject* world = ue::GetWorld();
+                    ue::UObject* player = world ? ue::GetPlayerCharacter(world, 0) : nullptr;
+                    const char* reason = nullptr;
+                    if (sifucoop::game::CheckpointGameplayState(world, player, &reason)) {
+                        ActivateAction(tas::Action::PauseResume);
+                        if (g_paused.load(std::memory_order_relaxed)) {
+                            g_gui_pause_owned = true;
+                            g_gui_pause_serial =
+                                g_pause_change_serial.load(std::memory_order_relaxed);
+                        }
+                    } else {
+                        SC_LOG("tas: GUI opened without auto-pause: %s",
+                               reason ? reason : "gameplay state unavailable");
                     }
                 }
             } else {
