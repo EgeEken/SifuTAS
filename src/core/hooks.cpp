@@ -484,6 +484,9 @@ void __fastcall TickHook(void* self, float delta_seconds, bool idle_mode) {
     RefreshGameplayControlState();
     PollTASKeys();
     g_original_tick(self, delta_seconds, idle_mode);
+    if (g_paused.load(std::memory_order_relaxed) ||
+        std::fabs(g_tas_multiplier.load(std::memory_order_relaxed) - 1.f) > 0.001f)
+        RefreshGameplayControlState();
 
     const LONGLONG on_frame_start = PerfNow();
     OnFrame();
