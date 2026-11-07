@@ -270,8 +270,8 @@ const char* ActionName(Action action) {
         case Action::SpeedFifth: return "Speed preset 2";
         case Action::SpeedTenth: return "Speed preset 3";
         case Action::ToggleGui: return "Toggle GUI";
-        case Action::SaveCheckpoint: return "Save checkpoint";
-        case Action::LoadCheckpoint: return "Load checkpoint";
+        case Action::SaveCheckpoint: return "Save experimental snapshot";
+        case Action::LoadCheckpoint: return "Load experimental snapshot";
         default: return "Unknown action";
     }
 }

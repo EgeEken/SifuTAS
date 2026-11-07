@@ -153,15 +153,21 @@ LRESULT CALLBACK WndProcHook(HWND window, UINT message, WPARAM wparam, LPARAM lp
 
 void DrawPlaybackTab() {
     const tas::Settings settings = tas::GetSettings();
-    ImGui::BeginDisabled(!hooks::IsPaused());
+    ImGui::BeginDisabled(!hooks::IsGameplaySupported() || !hooks::IsPaused());
     if (ImGui::Button("Frame advance", ImVec2(220.f * settings.gui_scale, 0)))
         hooks::ActivateAction(tas::Action::FrameAdvance);
     ImGui::EndDisabled();
 
+    ImGui::BeginDisabled(!hooks::IsGameplaySupported());
     float speed = hooks::PlaybackSpeed();
     if (ImGui::SliderFloat("Playback speed", &speed, 0.01f, 4.f, "%.2fx"))
         hooks::SetPlaybackSpeed(speed);
+    ImGui::EndDisabled();
     ImGui::Text("Current speed: %.3fx", hooks::PlaybackSpeed());
+    ImGui::Text("Effective speed: %.3fx",
+                hooks::IsGameplaySupported() ? hooks::PlaybackSpeed() : 1.f);
+    if (!hooks::IsGameplaySupported())
+        ImGui::TextDisabled("Playback controls are disabled outside active gameplay.");
     ImGui::TextDisabled("F3-F5 select the configured speed presets.");
 
     ImGui::Spacing();
@@ -175,7 +181,7 @@ void DrawPlaybackTab() {
 
 void DrawSavestatesTab() {
     const tas::checkpoint::Status status = tas::checkpoint::GetStatus();
-    ImGui::TextDisabled("One in-memory checkpoint. Combat AI, actions, and timers remain live.");
+    ImGui::TextDisabled("Experimental state snapshot. Combat actions and encounter progression are not restored.");
     if (!ImGui::CollapsingHeader("Advanced / diagnostics")) return;
     ImGui::Text("World actors: %u; active candidates: %u; captured: %u; capacity: 32",
                 status.world_actor_count, status.enumerated_count, status.captured_count);
@@ -233,7 +239,7 @@ void DrawSettingsTab() {
             if (ImGui::SmallButton(button)) g_rebind_action.store(i, std::memory_order_relaxed);
         }
     }
-    ImGui::TextDisabled("F7 saves and F8 loads the in-memory checkpoint.");
+    ImGui::TextDisabled("F7 saves and F8 loads the experimental state snapshot.");
     ImGui::Separator();
     for (int i = 0; i < 3; ++i) {
         char label[32] = {};
@@ -276,15 +282,17 @@ void DrawMenu() {
     const float scale = settings.gui_scale;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float button_width = (ImGui::GetContentRegionAvail().x - spacing * 2.f) / 3.f;
+    ImGui::BeginDisabled(!hooks::IsGameplaySupported());
     if (ImGui::Button(hooks::IsPaused() ? "Resume" : "Pause",
                       ImVec2(button_width, 38.f * scale)))
         hooks::ActivateAction(tas::Action::PauseResume);
+    ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Save checkpoint",
+    if (ImGui::Button("Save snapshot",
                       ImVec2(button_width, 38.f * scale)))
         hooks::ActivateAction(tas::Action::SaveCheckpoint);
     ImGui::SameLine();
-    if (ImGui::Button("Load checkpoint",
+    if (ImGui::Button("Load snapshot",
                       ImVec2(button_width, 38.f * scale)))
         hooks::ActivateAction(tas::Action::LoadCheckpoint);
     const auto checkpoint_status = tas::checkpoint::GetStatus();
@@ -295,7 +303,7 @@ void DrawMenu() {
             DrawPlaybackTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Savestates")) {
+        if (ImGui::BeginTabItem("Snapshot")) {
             DrawSavestatesTab();
             ImGui::EndTabItem();
         }

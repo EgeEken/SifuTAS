@@ -266,7 +266,7 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
         return false;
     }
     ue::UObject* player = ue::GetPlayerCharacter(world, 0);
-    if (!game::CheckpointGameplayState(world, player, error)) return false;
+    if (!game::SupportedTASGameplayState(world, player, error)) return false;
     if (!hooks::IsPaused()) {
         *error = "pause the simulation before saving (F1)";
         return false;
@@ -724,7 +724,7 @@ void LoadCheckpoint() {
     }
     ue::UObject* player = ue::GetPlayerCharacter(world, 0);
     const char* gameplay_error = nullptr;
-    if (!game::CheckpointGameplayState(world, player, &gameplay_error)) {
+    if (!game::SupportedTASGameplayState(world, player, &gameplay_error)) {
         SetResult("load refused", gameplay_error ? gameplay_error
                                                    : "player/game state unavailable");
         return;

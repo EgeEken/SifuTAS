@@ -42,6 +42,7 @@ constexpr float kFrameStepSeconds = 1.f / 60.f;
 
 std::uintptr_t g_base = 0;
 std::atomic<float> g_tas_multiplier{1.f};
+std::atomic<bool> g_gameplay_supported{false};
 std::atomic<bool> g_paused{false};
 std::atomic<unsigned long long> g_pause_change_serial{0};
 bool g_gui_pause_owned = false;
@@ -200,9 +201,9 @@ bool ReadFloatAt(const void* object, std::uint32_t offset, float* out) {
 
 float __fastcall EffectiveTimeDilationHook(void* self) {
     const float game_scale = g_original_effective_time_dilation(self);
-    const float multiplier = g_step_in_progress.load(std::memory_order_relaxed)
-                                 ? 1.f
-                                 : g_tas_multiplier.load(std::memory_order_relaxed);
+    const float multiplier = !g_gameplay_supported.load(std::memory_order_relaxed) ||
+                                     g_step_in_progress.load(std::memory_order_relaxed)
+                                 ? 1.f : g_tas_multiplier.load(std::memory_order_relaxed);
     return game_scale * multiplier;
 }
 
@@ -357,6 +358,28 @@ void PollTASKeys() {
     }
 }
 
+void RefreshGameplayControlState() {
+    ue::UObject* world = ue::GetWorld();
+    ue::UObject* player = world ? ue::GetPlayerCharacter(world, 0) : nullptr;
+    const char* reason = nullptr;
+    const bool supported = game::SupportedTASGameplayState(world, player, &reason);
+    const bool previous = g_gameplay_supported.exchange(supported, std::memory_order_relaxed);
+    if (supported) {
+        if (!previous) SC_LOG("tas: controls enabled: supported gameplay");
+        return;
+    }
+
+    g_steps_requested.store(0, std::memory_order_relaxed);
+    g_gui_pause_owned = false;
+    if (g_paused.exchange(false, std::memory_order_relaxed)) {
+        g_pause_change_serial.fetch_add(1, std::memory_order_relaxed);
+        SC_LOG("tas: pause released outside supported gameplay");
+    }
+    if (previous)
+        SC_LOG("tas: controls disabled: %s; effective speed 1.0x",
+               reason ? reason : "gameplay state unavailable");
+}
+
 void __fastcall WorldTickHook(void* self, int tick_type, float delta_seconds) {
     const bool current_world = self == ue::GetWorld();
     if (current_world)
@@ -458,6 +481,7 @@ void __fastcall TickHook(void* self, float delta_seconds, bool idle_mode) {
         g_frame_delta = 1.f / 60.f;
     }
 
+    RefreshGameplayControlState();
     PollTASKeys();
     g_original_tick(self, delta_seconds, idle_mode);
 
@@ -636,7 +660,8 @@ unsigned long long FrameCount() { return g_frames.load(std::memory_order_relaxed
 void ActivateAction(tas::Action action) {
     switch (action) {
         case tas::Action::PauseResume: {
-            if (!g_original_world_tick) return;
+            if (!g_original_world_tick ||
+                !g_gameplay_supported.load(std::memory_order_relaxed)) return;
             bool previous = g_paused.load(std::memory_order_relaxed);
             while (!g_paused.compare_exchange_weak(previous, !previous,
                                                    std::memory_order_relaxed)) {}
@@ -647,7 +672,8 @@ void ActivateAction(tas::Action action) {
             break;
         }
         case tas::Action::FrameAdvance:
-            if (g_paused.load(std::memory_order_relaxed) && g_original_world_tick) {
+            if (g_gameplay_supported.load(std::memory_order_relaxed) &&
+                g_paused.load(std::memory_order_relaxed) && g_original_world_tick) {
                 const int count = tas::GetSettings().frames_per_step;
                 int pending = g_steps_requested.load(std::memory_order_relaxed);
                 while (!g_steps_requested.compare_exchange_weak(
@@ -657,6 +683,7 @@ void ActivateAction(tas::Action action) {
         case tas::Action::SpeedHalf:
         case tas::Action::SpeedFifth:
         case tas::Action::SpeedTenth: {
+            if (!g_gameplay_supported.load(std::memory_order_relaxed)) return;
             const int index = static_cast<int>(action) - static_cast<int>(tas::Action::SpeedHalf);
             const float requested = tas::GetSettings().speeds[index];
             const float current = g_tas_multiplier.load(std::memory_order_relaxed);
@@ -669,10 +696,7 @@ void ActivateAction(tas::Action action) {
             if (!ui::IsMenuOpen()) {
                 g_gui_pause_owned = false;
                 if (!g_paused.load(std::memory_order_relaxed)) {
-                    ue::UObject* world = ue::GetWorld();
-                    ue::UObject* player = world ? ue::GetPlayerCharacter(world, 0) : nullptr;
-                    const char* reason = nullptr;
-                    if (sifucoop::game::CheckpointGameplayState(world, player, &reason)) {
+                    if (g_gameplay_supported.load(std::memory_order_relaxed)) {
                         ActivateAction(tas::Action::PauseResume);
                         if (g_paused.load(std::memory_order_relaxed)) {
                             g_gui_pause_owned = true;
@@ -680,8 +704,7 @@ void ActivateAction(tas::Action action) {
                                 g_pause_change_serial.load(std::memory_order_relaxed);
                         }
                     } else {
-                        SC_LOG("tas: GUI opened without auto-pause: %s",
-                               reason ? reason : "gameplay state unavailable");
+                        SC_LOG("tas: GUI opened without auto-pause: gameplay state unavailable");
                     }
                 }
             } else {
@@ -710,10 +733,15 @@ void ActivateAction(tas::Action action) {
 float PlaybackSpeed() { return g_tas_multiplier.load(std::memory_order_relaxed); }
 
 void SetPlaybackSpeed(float speed) {
-    if (!std::isfinite(speed) || speed < 0.01f || speed > 4.f) return;
+    if (!g_gameplay_supported.load(std::memory_order_relaxed) ||
+        !std::isfinite(speed) || speed < 0.01f || speed > 4.f) return;
     g_tas_multiplier.store(speed, std::memory_order_relaxed);
 }
 
 bool IsPaused() { return g_paused.load(std::memory_order_relaxed); }
+
+bool IsGameplaySupported() {
+    return g_gameplay_supported.load(std::memory_order_relaxed);
+}
 
 }

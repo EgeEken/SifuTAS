@@ -19,5 +19,6 @@ void ActivateAction(tas::Action action);
 void SetPlaybackSpeed(float speed);
 float PlaybackSpeed();
 bool IsPaused();
+bool IsGameplaySupported();
 
 }

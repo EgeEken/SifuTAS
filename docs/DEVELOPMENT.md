@@ -15,7 +15,7 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 ## Immediate milestones
 
-1. **Validate this pass in-game**: check camera framing while paused, cloth reset after teleport, binding-key consumption, montage handling, and profiling output. The prior checkpoint save/restore behavior is confirmed in Free Training; this build awaits installation and verification.
+1. **Validate this pass in-game**: check the unsupported-state TAS guard through death/game-over, menus and loading; test the F10 replay recording probe; then check camera framing while paused, cloth reset after teleport, binding-key consumption, montage handling, and profiling output.
 2. **Validate the dedicated SifuTAS GUI and settings**: mouse handling, tab behavior, configurable controls and settings persistence were previously reported working. Recheck for regressions from scaling and slider changes.
 3. **Validate slowdown** on a training encounter. The recent extended diagnostic session did not reproduce acceleration; its late samples show world time stopped advancing and need a new baseline during active play.
 4. **Validate pause and frame advance**: the user reports these work. Check for input buffering or multi-world tick differences if later changes affect them.
@@ -25,9 +25,9 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 
 `src/tas/state_reference.h` keeps checkpoint identity/timeline metadata separate from the future recording system: level path, player/enemy identities, engine tick, optional verified simulation frame, and recording branch ID.
 
-## Checkpoint v1 limits
+## Experimental state snapshot limits
 
-Checkpoint v1 enumerates up to 256 current-world `AFightingCharacter` candidates and snapshots up to 32 distinct characters plus the player. There is no map-name restriction. The latest Free Training log reports level `/Game/Maps/TU_3/ArenaModeMenu/ArenaMode_Menu` and one active tracked opponent with `living=0`; source review confirms `Tracked::health` is populated by the multiplayer `PublishEnemies()` path, so it remains zero in offline play. The checkpoint no longer treats that network cache as authoritative and reads health directly via `ResolveFighter()` / `GetHealth()`.
+The experimental state snapshot enumerates up to 256 current-world `AFightingCharacter` candidates and snapshots up to 32 distinct characters plus the player. There is no map-name restriction. The latest Free Training log reports level `/Game/Maps/TU_3/ArenaModeMenu/ArenaMode_Menu` and one active tracked opponent with `living=0`; source review confirms `Tracked::health` is populated by the multiplayer `PublishEnemies()` path, so it remains zero in offline play. The snapshot does not restore combat actions or encounter progression.
 
 Capture records availability for transform, velocity, health/max health, guard, down/death flags, actor time dilation, and montage/playhead without requiring every field or actor to be restorable. It includes moving, downed, distant, and zero-health characters. If actor count exceeds the cap or enumeration fails, the snapshot is marked incomplete; a player-only snapshot is still possible.
 
@@ -39,7 +39,17 @@ After a successful character teleport, the mesh receives `ForceClothNextUpdateTe
 
 Montage playhead capture is distinct from combat-action capture. On load, a montage position is only sought when the exact same montage UObject remains active; it is read back for verification. The implementation does not start a saved montage when it is no longer active, and does not restore montage notifies, attack orders, behavior trees, pending attacks, root motion, or related timers. Available Free Training logs from the reported attack test show `montage=0`; the observed attack continuation therefore was not a captured active montage and likely depends on Sifu combat-order/animation-graph state. Existing order hooks observe or replay selected orders for co-op presentation; their serialized order structures do not provide a safe whole-fight restore surface.
 
-This is not an arbitrary-frame savestate. A partial restore does not rewind AI, animation, attack actions, movement mode, timers, callbacks, or destroyed actors. Inspect the per-field result while paused before resuming.
+This is not a gameplay savestate or arbitrary-frame restore. A partial restore does not rewind AI, animation, attack actions, encounter progression, movement mode, timers, callbacks, or destroyed actors. Inspect the per-field result while paused before resuming.
+
+## Native replay investigation
+
+The Steam PDB confirms Sifu `UReplaySystem` recording start/stop and eligibility functions, status, current demo time and length, demo-play time dilation, keyframe/time conversion and snapping queries, and replay-management access. `UReplayManagementMenuWidget` exposes stream enumeration, playback, and edit entry points. These are PDB-level API confirmations; runtime behavior and output format are not yet confirmed. The Sifu API exposes Unreal's DemoNetDriver, actor replication-time queries, and an initial-state registration event, suggesting recordings contain a replication stream rather than local input. Which animation/gameplay state is replicated remains unverified. Whether recording timestamps follow TAS-dilated game time or wall time is not established. The stream may reproduce a visual encounter through replicated state and events, but exact arbitrary-time seeking and complete encounter reconstruction are unverified. Native playback dilation is available, although whether it can be set independently during Replay Editor playback needs testing. There is no confirmed supported handoff from replay playback back to the same live world.
+
+An existing opt-in F10 probe (enable `[coop] replay_probe=1` in `SifuCoop.ini`) calls Sifu's recording eligibility and start/stop APIs, then logs whether recording stopped and the current replay length. It does not access the replay data struct because its layout is not established, and cannot resolve a replay ID. The user must inspect the newest recording through the normal Replay Editor. First test a short Free Training recording captured at 0.2× and played at 1.0×; compare event timing and scene continuity. Do not use generic DemoNetDriver APIs as live savestates.
+
+## Deterministic input playback feasibility
+
+The smallest meaningful test is a roughly five-second Free Training segment from a repeatable idle setup. Capture controller input at the earliest stable input boundary with explicit press/release edges and frame/timestamp, then inject the same sequence after restarting the same encounter under a fixed timestep. Hash a small set of observable state each tick: player/enemy transforms, velocities, health/structure, current montage/position, and selected AI/order state. Compare divergence per tick. A first version can measure determinism without claiming to control it. If divergence appears, add RNG stream state and physics/input sampling measurements before building an editable timeline. Current code has neither the input boundary interception nor a global fixed-timestep guarantee; enemy AI, physics, timers and random streams are unmeasured. Therefore deterministic reconstruction is an experiment, not an established savestate strategy.
 
 ## Known risks
 

@@ -236,13 +236,27 @@ bool ReadGameOverState(ue::UObject* world, bool* game_over) {
     return true;
 }
 
-bool CheckpointGameplayState(ue::UObject* world, ue::UObject* player,
-                             const char** reason) {
+bool SupportedTASGameplayState(ue::UObject* world, ue::UObject* player,
+                               const char** reason) {
     if (!reason) return false;
     *reason = "game state is unavailable";
     if (!ue::IsAliveObject(world)) {
         *reason = "world is unavailable";
         return false;
+    }
+    char level[512] = {};
+    if (!ue::GetCurrentLevelPath(level, sizeof(level))) {
+        *reason = "level identity could not be validated";
+        return false;
+    }
+    static const char* const kNonGameplayLevels[] = {
+        "SelectHideoutLevel", "MainMenu", "Frontend", "Startup", "EntryLevel",
+        "Hideout_0_Main"};
+    for (const char* fragment : kNonGameplayLevels) {
+        if (std::strstr(level, fragment)) {
+            *reason = "front-end or hideout menu is active";
+            return false;
+        }
     }
     bool transitioning = false;
     if (!ue::ReadWorldTransitionState(world, &transitioning)) {
@@ -251,6 +265,25 @@ bool CheckpointGameplayState(ue::UObject* world, ue::UObject* player,
     }
     if (transitioning) {
         *reason = "world level transition is active";
+        return false;
+    }
+    static ue::UObject* gameplay_statics = nullptr;
+    if (!gameplay_statics)
+        gameplay_statics = ue::FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");
+    if (!gameplay_statics || !ue::IsValidObject(gameplay_statics)) {
+        *reason = "game pause state could not be validated";
+        return false;
+    }
+    struct IsGamePausedParams {
+        ue::UObject* WorldContextObject;
+        bool ReturnValue;
+    } paused = {world, false};
+    if (!ue::CallFunction(gameplay_statics, L"IsGamePaused", &paused)) {
+        *reason = "game pause state could not be validated";
+        return false;
+    }
+    if (paused.ReturnValue) {
+        *reason = "Sifu pause menu is active";
         return false;
     }
     bool game_over = false;

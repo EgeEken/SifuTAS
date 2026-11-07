@@ -6,6 +6,7 @@
 
 #include "../core/log.h"
 #include "../ue/reflection.h"
+#include "actors.h"
 #include "coop.h"
 
 namespace sifucoop::game {
@@ -103,19 +104,34 @@ bool StartReplayProbe() {
         SC_LOG("replay: no world yet");
         return false;
     }
+    const char* gameplay_reason = nullptr;
+    ue::UObject* player = ue::GetPlayerCharacter(world, 0);
+    if (!SupportedTASGameplayState(world, player, &gameplay_reason)) {
+        SC_LOG("replay: start refused: %s",
+               gameplay_reason ? gameplay_reason : "gameplay state unavailable");
+        return false;
+    }
     ue::UObject* system = ResolveReplaySystem();
     if (!system) return false;
 
     bool can_start = false;
-    if (CallBool(L"BPF_CanStartRecording", world, &can_start)) {
-        SC_LOG("replay: BPF_CanStartRecording = %s", can_start ? "true" : "false");
-    } else {
-        SC_LOG("replay: BPF_CanStartRecording did not dispatch");
+    if (!CallBool(L"BPF_CanStartRecording", world, &can_start) || !can_start) {
+        SC_LOG("replay: start refused: BPF_CanStartRecording is false or unavailable");
+        return false;
     }
 
     bool disabled = false;
-    if (CallBool(L"BPF_IsRecordingDisabled", world, &disabled)) {
-        SC_LOG("replay: BPF_IsRecordingDisabled = %s", disabled ? "true" : "false");
+    if (!CallBool(L"BPF_IsRecordingDisabled", world, &disabled) || disabled) {
+        SC_LOG("replay: start refused: recording is disabled or status is unavailable");
+        return false;
+    }
+
+    bool playing = false;
+    bool recording_active = false;
+    if (!CallBool(L"BPF_IsPlaying", world, &playing) || playing ||
+        !CallBool(L"BPF_IsRecording", world, &recording_active) || recording_active) {
+        SC_LOG("replay: start refused: replay status is unavailable or already active");
+        return false;
     }
 
     WorldContextOnly start = {};
@@ -158,7 +174,15 @@ void StopReplayProbe() {
     if (!ue::CallFunction(system, L"BPF_ReplayStopRecording", &stop)) {
         SC_LOG("replay: BPF_ReplayStopRecording did not dispatch");
     } else {
-        SC_LOG("replay: stop requested");
+        bool recording = true;
+        CallBool(L"BPF_IsRecording", world, &recording);
+        WorldContextFloat length = {};
+        length.WorldContextObject = world;
+        float seconds = -1.f;
+        if (ue::CallFunction(system, L"BPF_GetCurrentReplayLengthS", &length))
+            seconds = length.ReturnValue;
+        SC_LOG("replay: stop requested; recording=%s current_length=%.2fs; inspect the latest entry in Sifu's Replay Editor",
+               recording ? "yes" : "no", seconds);
     }
     g_probe_running = false;
 }

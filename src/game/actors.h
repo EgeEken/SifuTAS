@@ -41,8 +41,8 @@ bool IsDead(const Fighter& fighter);
 bool ReadDownDeathState(const Fighter& fighter, bool* down, bool* dead);
 bool ReadPlayerTransitionState(const Fighter& fighter, bool* transitioning);
 bool ReadGameOverState(ue::UObject* world, bool* game_over);
-bool CheckpointGameplayState(ue::UObject* world, ue::UObject* player,
-                             const char** reason);
+bool SupportedTASGameplayState(ue::UObject* world, ue::UObject* player,
+                               const char** reason);
 
 void SetDown(const Fighter& fighter, bool down);
 
