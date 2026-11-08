@@ -20,5 +20,6 @@ void SetPlaybackSpeed(float speed);
 float PlaybackSpeed();
 bool IsPaused();
 bool IsGameplaySupported();
+bool ReleaseGuiOwnedPauseForRecording();
 
 }

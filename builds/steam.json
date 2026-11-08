@@ -39,6 +39,7 @@
     "M_AFightingCharacter_DefenseComponent": 4776,
     "M_AFightingCharacter_HealthComponent": 4944,
     "M_AFightingCharacter_eFaction": 5424,
+    "M_AGameState_MatchState": 768,
     "M_APlayerCameraManager_CameraCachePrivate": 7024,
     "M_APlayerCameraManager_LastFrameCameraCachePrivate": 8560,
     "M_APlayerCameraManager_PendingViewTarget": 5424,

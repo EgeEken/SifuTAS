@@ -104,6 +104,7 @@ bool ObjectClassIs(UObject* object, const char* leaf_name);
 UObject* FindObjectByPath(const wchar_t* path_name);
 
 bool GetCurrentLevelPath(char* out, int out_size);
+bool GetWorldMatchState(UObject* world, FName* out);
 
 bool OpenLevel(const char* level_path);
 

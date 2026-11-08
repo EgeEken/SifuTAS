@@ -409,6 +409,7 @@ std::atomic<unsigned long long> g_frames{0};
 
 void OnFrame() {
     const auto frame = ++g_frames;
+    sifucoop::game::TickReplayRecording();
 
     // The socket is pumped before anything that needs a world, so menus and
     // level loads keep acknowledging, pinging and receiving.
@@ -453,8 +454,6 @@ void OnFrame() {
 
     start = PerfNow();
     sifucoop::game::TickRunState(player);
-    sifucoop::game::TickReplayProbe();
-
     if (!sifucoop::game::IsOrderHookInstalled()) {
         sifucoop::game::InstallOrderHook(g_base, player);
 
@@ -728,6 +727,9 @@ void ActivateAction(tas::Action action) {
         case tas::Action::LoadCheckpoint:
             tas::checkpoint::QueueLoad();
             break;
+        case tas::Action::ToggleNativeRecording:
+            sifucoop::game::QueueReplayRecordingToggle();
+            break;
         case tas::Action::Count:
             break;
     }
@@ -745,6 +747,21 @@ bool IsPaused() { return g_paused.load(std::memory_order_relaxed); }
 
 bool IsGameplaySupported() {
     return g_gameplay_supported.load(std::memory_order_relaxed);
+}
+
+bool ReleaseGuiOwnedPauseForRecording() {
+    if (!g_paused.load(std::memory_order_relaxed)) return true;
+    if (!g_gui_pause_owned ||
+        g_pause_change_serial.load(std::memory_order_relaxed) != g_gui_pause_serial)
+        return false;
+    bool expected = true;
+    if (!g_paused.compare_exchange_strong(expected, false, std::memory_order_relaxed))
+        return !expected;
+    g_steps_requested.store(0, std::memory_order_relaxed);
+    g_pause_change_serial.fetch_add(1, std::memory_order_relaxed);
+    g_gui_pause_owned = false;
+    SC_LOG("tas: GUI-owned pause released for native replay recording");
+    return true;
 }
 
 }

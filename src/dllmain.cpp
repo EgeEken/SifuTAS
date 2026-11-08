@@ -271,7 +271,6 @@ DWORD WINAPI Bootstrap(LPVOID) {
     sifucoop::game::InitEnemies(base);
     sifucoop::game::InstallPlayOrderHook(base);
     sifucoop::game::InitSelfTest();
-    sifucoop::game::InitReplayProbe();
 
     if (!sifucoop::ui::StartInGameOverlay())
         SC_LOG("ui: TAS GUI unavailable; keyboard controls remain active");

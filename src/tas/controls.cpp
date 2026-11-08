@@ -23,6 +23,7 @@ std::atomic<bool> g_suppressed_key_was_down{false};
 bool g_save_error_logged = false;
 
 int DefaultKey(Action action) {
+    if (action == Action::ToggleNativeRecording) return VK_F10;
     return VK_F1 + static_cast<int>(action);
 }
 
@@ -272,6 +273,7 @@ const char* ActionName(Action action) {
         case Action::ToggleGui: return "Toggle GUI";
         case Action::SaveCheckpoint: return "Save experimental snapshot";
         case Action::LoadCheckpoint: return "Load experimental snapshot";
+        case Action::ToggleNativeRecording: return "Start / stop native replay recording";
         default: return "Unknown action";
     }
 }

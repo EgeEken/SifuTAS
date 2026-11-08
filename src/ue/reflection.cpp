@@ -332,6 +332,23 @@ bool GetCurrentLevelPath(char* out, int out_size) {
     return out[0] != '\0';
 }
 
+bool GetWorldMatchState(UObject* world, FName* out) {
+    if (!world || !out || !offsets::M_AGameState_MatchState) return false;
+    static UObject* statics = nullptr;
+    if (!IsAliveObject(statics))
+        statics = FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");
+    if (!IsAliveObject(statics)) return false;
+    struct Params {
+        UObject* WorldContextObject;
+        UObject* ReturnValue;
+    } params = {};
+    params.WorldContextObject = world;
+    if (!CallFunction(statics, L"GetGameState", &params) ||
+        !IsAliveObject(params.ReturnValue))
+        return false;
+    return ReadOffset(params.ReturnValue, offsets::M_AGameState_MatchState, out);
+}
+
 bool OpenLevel(const char* level_path) {
     if (!g_ready || !g_open_level || !level_path || !level_path[0]) return false;
 

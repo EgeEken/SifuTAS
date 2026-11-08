@@ -312,6 +312,7 @@ WANTED_MEMBERS = {
 
     "M_AThePlainesGameState_fRoomClearedLifePercent": ("AThePlainesGameState",
                                                       "m_fRoomClearedLifePercent"),
+    "M_AGameState_MatchState": ("AGameState", "MatchState"),
 
 
 

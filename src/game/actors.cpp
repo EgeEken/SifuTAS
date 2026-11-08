@@ -267,6 +267,44 @@ bool SupportedTASGameplayState(ue::UObject* world, ue::UObject* player,
         *reason = "world level transition is active";
         return false;
     }
+    static bool match_state_names_ready = false;
+    static ue::FName in_progress = {};
+    static ue::FName waiting_post_match = {};
+    static ue::FName entering_map = {};
+    static ue::FName waiting_to_start = {};
+    static ue::FName leaving_map = {};
+    static ue::FName aborted = {};
+    if (!match_state_names_ready) {
+        match_state_names_ready =
+            ue::MakeFName(L"InProgress", &in_progress) &&
+            ue::MakeFName(L"WaitingPostMatch", &waiting_post_match) &&
+            ue::MakeFName(L"EnteringMap", &entering_map) &&
+            ue::MakeFName(L"WaitingToStart", &waiting_to_start) &&
+            ue::MakeFName(L"LeavingMap", &leaving_map) &&
+            ue::MakeFName(L"Aborted", &aborted);
+    }
+    ue::FName match_state = {};
+    if (!match_state_names_ready || !ue::GetWorldMatchState(world, &match_state)) {
+        *reason = "game match state could not be validated";
+        return false;
+    }
+    const auto same_state = [&match_state](const ue::FName& expected) {
+        return match_state.comparison_index == expected.comparison_index &&
+               match_state.number == expected.number;
+    };
+    if (!same_state(in_progress)) {
+        if (same_state(waiting_post_match))
+            *reason = "match ended; results screen is active";
+        else if (same_state(leaving_map))
+            *reason = "match is leaving the level";
+        else if (same_state(entering_map) || same_state(waiting_to_start))
+            *reason = "match has not started";
+        else if (same_state(aborted))
+            *reason = "match was aborted";
+        else
+            *reason = "game is outside the active match state";
+        return false;
+    }
     static ue::UObject* gameplay_statics = nullptr;
     if (!gameplay_statics)
         gameplay_statics = ue::FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");

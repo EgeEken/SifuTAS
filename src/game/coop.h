@@ -101,7 +101,6 @@ struct Config {
     // the right value is an animation judgement, not something a log settles.
     int death_repair_ms = 100;
 
-    bool replay_probe = false;
 };
 
 struct Stats {

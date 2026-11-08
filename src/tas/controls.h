@@ -11,6 +11,7 @@ enum class Action : int {
     ToggleGui,
     SaveCheckpoint,
     LoadCheckpoint,
+    ToggleNativeRecording,
     Count,
 };
 

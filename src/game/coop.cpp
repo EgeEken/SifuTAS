@@ -141,7 +141,6 @@ void Load() {
     if (g_config.death_repair_ms > 2000) g_config.death_repair_ms = 2000;
     if (g_config.trace_hz < 1) g_config.trace_hz = 1;
     if (g_config.trace_hz > 30) g_config.trace_hz = 30;
-    g_config.replay_probe = ReadBool("replay_probe", g_config.replay_probe, ini);
     g_config.verbose_enemies = ReadBool("verbose_enemies", g_config.verbose_enemies, ini);
     g_config.verbose_orders = ReadBool("verbose_orders", g_config.verbose_orders, ini);
 

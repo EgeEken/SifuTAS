@@ -12,6 +12,7 @@
 #include "../../third_party/minhook/include/MinHook.h"
 #include "../core/hooks.h"
 #include "../core/log.h"
+#include "../game/replay.h"
 #include "../tas/checkpoint.h"
 #include "../tas/controls.h"
 #include "overlay.h"
@@ -215,9 +216,37 @@ void DrawSavestatesTab() {
 }
 
 void DrawRecordingTab() {
-    ImGui::TextDisabled("Input recording and playback are not implemented yet.");
+    const auto status = game::GetReplayRecordingStatus();
+    const auto settings = tas::GetSettings();
+    const bool busy = status.state == game::ReplayRecordingState::Requested ||
+                      status.state == game::ReplayRecordingState::Starting ||
+                      status.state == game::ReplayRecordingState::Finalizing;
+    const bool active = status.state == game::ReplayRecordingState::Active;
+    if (active) {
+        if (ImGui::Button("Stop native recording",
+                          ImVec2(260.f * settings.gui_scale, 40.f * settings.gui_scale)))
+            hooks::ActivateAction(tas::Action::ToggleNativeRecording);
+    } else {
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("Start native recording",
+                          ImVec2(260.f * settings.gui_scale, 40.f * settings.gui_scale)))
+            hooks::ActivateAction(tas::Action::ToggleNativeRecording);
+        ImGui::EndDisabled();
+    }
+    ImGui::Text("Status: %s", status.message);
+    ImGui::Text("Elapsed: %.1f s", status.elapsed_seconds);
+    const bool checked = status.state != game::ReplayRecordingState::Ready;
+    ImGui::Text("Replay system: %s; demo driver: %s",
+                checked ? (status.replay_system_available ? "available" : "unavailable")
+                        : "not checked",
+                status.demo_driver_available ? "active" :
+                    (checked ? "not active" : "not checked"));
     ImGui::Separator();
-    ImGui::TextDisabled("No recording controls are active.");
+    ImGui::TextWrapped("This uses Sifu's native replay stream. It does not record TAS inputs or provide deterministic playback.");
+    char shortcut[48] = {};
+    tas::BindingText(settings.bindings[static_cast<int>(tas::Action::ToggleNativeRecording)],
+                     shortcut, sizeof(shortcut));
+    ImGui::TextDisabled("%s toggles native recording when Sifu is focused.", shortcut);
 }
 
 void DrawSettingsTab() {
