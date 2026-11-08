@@ -30,7 +30,7 @@ bool g_start_requested = false;
 
 ue::UObject* ResolveReplaySystem() {
     if (ue::IsAliveObject(g_replay_cdo)) return g_replay_cdo;
-    g_replay_cdo = ue::FindObjectByPath(L"/Script/Sifu.Default__UReplaySystem");
+    g_replay_cdo = ue::FindObjectByPath(L"/Script/Sifu.Default__ReplaySystem");
     return ue::IsAliveObject(g_replay_cdo) ? g_replay_cdo : nullptr;
 }
 
@@ -145,7 +145,7 @@ void StartRecording() {
     ue::UObject* system = ResolveReplaySystem();
     if (!system) {
         Fail(ReplayRecordingState::SystemUnavailable,
-             "Replay system unavailable at /Script/Sifu.Default__UReplaySystem.", false);
+             "Replay system unavailable at /Script/Sifu.Default__ReplaySystem.", false);
         return;
     }
     ue::UObject* instance = nullptr;
