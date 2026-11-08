@@ -13,6 +13,7 @@
 #include "../game/enemies.h"
 #include "../game/actors.h"
 #include "../game/orders.h"
+#include "../game/player2.h"
 #include "../game/puppet.h"
 #include "../game/replay.h"
 #include "../game/runstate.h"
@@ -24,6 +25,7 @@
 #include "trace.h"
 #include "../tas/controls.h"
 #include "../tas/checkpoint.h"
+#include "../tas/input_trace.h"
 #include "../ui/overlay.h"
 
 namespace sifucoop::hooks {
@@ -382,20 +384,27 @@ void RefreshGameplayControlState() {
 
 void __fastcall WorldTickHook(void* self, int tick_type, float delta_seconds) {
     const bool current_world = self == ue::GetWorld();
+    const bool will_execute = !g_paused.load(std::memory_order_relaxed) || !current_world;
+    tas::input_trace::WorldTickBegin(self, tick_type, delta_seconds, will_execute);
     if (current_world)
         g_last_world_tick_delta.store(delta_seconds, std::memory_order_relaxed);
     if (!g_paused.load(std::memory_order_relaxed) || !current_world) {
         g_original_world_tick(self, tick_type, delta_seconds);
+        tas::input_trace::WorldTickEnd(self, tick_type, delta_seconds, true);
         return;
     }
 
     int requested = g_steps_requested.load(std::memory_order_relaxed);
     while (requested > 0 && !g_steps_requested.compare_exchange_weak(
                                 requested, requested - 1, std::memory_order_relaxed)) {}
-    if (requested <= 0) return;
+    if (requested <= 0) {
+        tas::input_trace::WorldTickEnd(self, tick_type, delta_seconds, false);
+        return;
+    }
     g_step_in_progress.store(true, std::memory_order_relaxed);
     g_original_world_tick(self, tick_type, kFrameStepSeconds);
     g_step_in_progress.store(false, std::memory_order_relaxed);
+    tas::input_trace::WorldTickEnd(self, tick_type, kFrameStepSeconds, true);
     ++g_steps;
     SC_LOG("tas: step %llu", g_steps);
 }
@@ -482,7 +491,9 @@ void __fastcall TickHook(void* self, float delta_seconds, bool idle_mode) {
 
     RefreshGameplayControlState();
     PollTASKeys();
+    tas::input_trace::EngineTickBegin(delta_seconds, idle_mode);
     g_original_tick(self, delta_seconds, idle_mode);
+    tas::input_trace::EngineTickEnd();
     if (g_paused.load(std::memory_order_relaxed) ||
         std::fabs(g_tas_multiplier.load(std::memory_order_relaxed) - 1.f) > 0.001f)
         RefreshGameplayControlState();
@@ -546,6 +557,10 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
         SC_LOG("tas: MinHook init failed (%d)", static_cast<int>(init));
         return true;
     }
+
+    if (!game::InstallPlayerControllerInputHook())
+        SC_LOG("inputtrace: APlayerController::InputKey hook unavailable");
+    tas::input_trace::InstallHooks(base);
 
     if (offsets::AWorldSettings_GetEffectiveTimeDilation) {
         g_effective_time_dilation_target =
@@ -622,6 +637,7 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
 }
 
 void RemoveTickHook() {
+    tas::input_trace::RemoveHooks();
     if (g_set_demo_play_time_dilation_target) {
         MH_DisableHook(g_set_demo_play_time_dilation_target);
         MH_RemoveHook(g_set_demo_play_time_dilation_target);

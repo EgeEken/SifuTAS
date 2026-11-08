@@ -159,7 +159,7 @@ bool ReadViewTarget(UObject* manager, std::uint32_t offset, UObject** target,
            std::isfinite(view->fov);
 }
 
-UObject* GetPlayerController(UObject* world) {
+UObject* GetPlayerControllerInternal(UObject* world, int index) {
     UObject* statics = FindObjectByPath(L"/Script/Engine.Default__GameplayStatics");
     if (!world || !statics) return nullptr;
     struct Params {
@@ -169,10 +169,15 @@ UObject* GetPlayerController(UObject* world) {
         UObject* ReturnValue;
     } params = {};
     params.WorldContextObject = world;
+    params.PlayerIndex = index;
     return CallFunction(statics, L"GetPlayerController", &params) ? params.ReturnValue
                                                                    : nullptr;
 }
 
+}
+
+UObject* GetPlayerController(UObject* world_context, int index) {
+    return GetPlayerControllerInternal(world_context, index);
 }
 
 bool InitReflection(std::uintptr_t base) {
@@ -454,7 +459,7 @@ bool SetActiveMontagePosition(UObject* actor, const AnimState& saved) {
 
 bool ReadPlayerCameraState(UObject* world, PlayerCameraState* out) {
     if (!world || !out) return false;
-    UObject* controller = GetPlayerController(world);
+    UObject* controller = GetPlayerController(world, 0);
     if (!IsAliveObject(controller)) return false;
     UObject* manager = nullptr;
     if (!ReadOffset(controller, offsets::M_APlayerController_PlayerCameraManager, &manager) ||

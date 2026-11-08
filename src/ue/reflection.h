@@ -31,6 +31,7 @@ bool GetActorLocation(UObject* actor, FVector* out);
 bool GetActorRotation(UObject* actor, FRotator* out);
 
 UObject* GetPlayerCharacter(UObject* world_context, int index);
+UObject* GetPlayerController(UObject* world_context, int index);
 
 UObject* GetWorld();
 bool IsWorldInSeamlessTravel(UObject* world);

@@ -72,6 +72,7 @@ $sources = @(
     "src\core\log.cpp"
     "src\core\hooks.cpp"
     "src\tas\controls.cpp"
+    "src\tas\input_trace.cpp"
     "src\tas\checkpoint.cpp"
     "src\core\trace.cpp"
     "src\ue\reflection.cpp"
@@ -134,7 +135,7 @@ $flags = "-O2 -std=c++17 -static -static-libgcc -static-libstdc++ $imguiInc " +
          "-ld3dcompiler -ldwmapi"
 $srcArgs = ($sources | ForEach-Object { "`"$_`"" }) -join " "
 $defFile = Join-Path $Root "src\proxy\dsound.def"
-$logFile = Join-Path $OutDir "build.log"
+$logFile = Join-Path $OutDir "build-input-trace.log"
 
 cmd /c "g++ -shared -o `"$dll`" $srcArgs `"$defFile`" $flags > `"$logFile`" 2>&1"
 $compileOk = ($LASTEXITCODE -eq 0)

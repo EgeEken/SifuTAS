@@ -13,6 +13,7 @@
 #include "actors.h"
 #include "coop.h"
 #include "puppet.h"
+#include "../tas/input_trace.h"
 
 namespace sifucoop::game {
 namespace {
@@ -45,7 +46,8 @@ bool g_input_hook_installed = false;
 
 bool __fastcall PlayerControllerInputKeyHook(void* self, FKey key, std::uint32_t input_event,
                                              float amount, bool gamepad) {
-
+    tas::input_trace::RecordControllerKey(self, key.comparison_index, key.number,
+                                          input_event, amount, gamepad);
     if (self && self == g_controller) return false;
     return g_input_key ? g_input_key(self, key, input_event, amount, gamepad) : false;
 }
@@ -511,6 +513,8 @@ void ConfigurePawn(ue::UObject* pawn) {
 }
 
 void InitPlayer2(std::uintptr_t module_base) { g_base = module_base; }
+
+bool InstallPlayerControllerInputHook() { return EnsureInputHook(); }
 
 bool SecondPlayerActive() { return g_controller != nullptr; }
 

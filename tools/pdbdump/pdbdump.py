@@ -27,6 +27,9 @@ WANTED = {
 
 
     "APlayerController_InputKey": ["?InputKey@APlayerController@@"],
+    "UPlayerInput_InputKey": ["?InputKey@UPlayerInput@@"],
+    "UPlayerInput_InputAxis": ["?InputAxis@UPlayerInput@@"],
+    "UPlayerInput_ProcessInputStack": ["?ProcessInputStack@UPlayerInput@@"],
 
 
 
@@ -328,6 +331,7 @@ WANTED_MEMBERS = {
 
     "M_APlayerController_PlayerCameraManager": ("APlayerController",
                                                  "PlayerCameraManager"),
+    "M_APlayerController_PlayerInput": ("APlayerController", "PlayerInput"),
     "M_AController_ControlRotation": ("AController", "ControlRotation"),
     "M_APlayerCameraManager_CameraCachePrivate": ("APlayerCameraManager",
                                                    "CameraCachePrivate"),

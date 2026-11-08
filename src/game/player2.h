@@ -7,6 +7,7 @@
 namespace sifucoop::game {
 
 void InitPlayer2(std::uintptr_t module_base);
+bool InstallPlayerControllerInputHook();
 
 ue::UObject* CreateSecondPlayer();
 

@@ -15,6 +15,7 @@
 #include "../game/replay.h"
 #include "../tas/checkpoint.h"
 #include "../tas/controls.h"
+#include "../tas/input_trace.h"
 #include "overlay.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -247,6 +248,39 @@ void DrawRecordingTab() {
     tas::BindingText(settings.bindings[static_cast<int>(tas::Action::ToggleNativeRecording)],
                      shortcut, sizeof(shortcut));
     ImGui::TextDisabled("%s toggles native recording when Sifu is focused.", shortcut);
+
+    ImGui::Separator();
+    const auto trace = tas::input_trace::GetStatus();
+    const bool trace_busy = trace.state == tas::input_trace::State::Queued ||
+                            trace.state == tas::input_trace::State::Capturing ||
+                            trace.writer_active;
+    ImGui::BeginDisabled(trace_busy);
+    if (ImGui::Button("Capture input trace (5 s)",
+                      ImVec2(260.f * settings.gui_scale, 40.f * settings.gui_scale)))
+        tas::input_trace::QueueCapture();
+    ImGui::EndDisabled();
+    switch (trace.state) {
+        case tas::input_trace::State::Ready:
+            ImGui::TextDisabled("Input diagnostic trace is ready.");
+            break;
+        case tas::input_trace::State::Queued:
+            ImGui::Text("Input trace queued for the next engine tick.");
+            break;
+        case tas::input_trace::State::Capturing:
+            ImGui::Text("Capturing input and tick events: %u / 8192", trace.event_count);
+            break;
+        case tas::input_trace::State::Complete:
+            ImGui::Text("Trace complete: %u events, %u dropped%s", trace.event_count,
+                        trace.dropped_count,
+                        trace.writer_active ? "; writing log" : "");
+            break;
+        case tas::input_trace::State::Failed:
+            ImGui::Text("Input trace could not start; see SifuCoop.log.");
+            break;
+    }
+    ImGui::TextDisabled("Five-second bounded input/tick diagnostics are written to SifuCoop.log when capture ends.");
+    if (trace.state == tas::input_trace::State::Complete && !trace.player_input_available)
+        ImGui::TextDisabled("Local PlayerInput was unavailable; controller and tick events may still be present.");
 }
 
 void DrawSettingsTab() {
