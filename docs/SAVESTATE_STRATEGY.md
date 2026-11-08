@@ -1,6 +1,6 @@
 # Toward coherent SifuTAS savestates
 
-Status: architectural investigation and next implementation plan, **not** an implemented savestate. The native reset hooks on `testing` are passive and have not yet been observed in-game. Sifu must be launched and controlled only by the user.
+Status: reset discovery diagnostics are implemented on `testing`, but no reset-based restoration or full gameplay savestate has been demonstrated. Sifu must be launched and controlled only by the user.
 
 ## Why current snapshots are incomplete
 
@@ -73,5 +73,13 @@ Do not claim arbitrary-frame savestates, determinism, or gameplay replay from pa
 - Add concise status and diagnostic export (CSV/JSON or log summaries), rather than more default GUI text.
 - Keep the current passive reset hooks and input trace isolated, with bounded memory and no changes to gameplay state.
 - Make the GUI window slightly translucent without making foreground text hard to read.
+
+## Implemented discovery diagnostics (runtime test pending)
+
+- The Savestates tab's Advanced / diagnostics section can arm a five-second `UObject::ProcessEvent` trace. The hook records at most 2048 calls in a fixed array: event order, QPC timestamp, thread ID, owner address, class address, and `UFunction` address. Overflow is counted. It performs no name conversion or file logging while the hook runs; function/class paths are resolved after capture and emitted in `SifuCoop.log`. The trace is unfiltered during its bounded capture so an unexpected Blueprint reset function is not hidden.
+- The same section can capture a read-only baseline, let the user manually trigger Reset Situation, then request a comparison. The comparison waits for three consecutive game-thread samples with the same world, actor paths, UObject addresses and component addresses; it times out after ten seconds. It records current world path/address and match state; fighting actor paths/classes/addresses; transforms, velocity, custom dilation, health/guard, attack/defense/health component addresses, AI/movement/order component addresses, active montage path, and supported scalar fields. It also inventories `AAISituationActor` and `AAISpawner` instances.
+- Scalar metadata was resolved from the locally installed Steam UE4.26.2 executable/PDB UHT property tables. The first sample fields are `UAttackComponent.m_fDangerTimeOut` and `m_eDangerState`, `UAIFightingComponent.m_iCurrentPhaseNodeIndex` / `m_iLastPhaseNodeIndex`, `UCharacterMovementComponent.MaxWalkSpeed`, `USCAnimInstance.m_fCinematicOverallWeight`, `AAISituationActor.m_iCurrentLastManOccuranceCount`, and spawner respawn/spawn delay and kill-counter configuration. Config values are not assumed to represent live encounter progress. Arrays, maps, bool bitfields, and UObject references are not read by the generic scalar probes.
+- Actor comparison pairs by class path plus object path and separately reports pointer changes. It can show observable transform/vitals/selected-state differences and instance-address changes. It does not have a verified FUObjectArray serial identity, does not prove that same-address actors have the same lifecycle, and does not establish equality of hidden AI, timer, RNG, or physics state.
+- Reset/reapply remains disabled. The trace must first reveal the actual Reset Situation call chain and a stable post-reset boundary; runtime observations must then confirm which situation/spawner/AI fields represent encounter progression. Current inventory is diagnostic and does not issue resets or mutate state.
 
 Build and unit-test on the user's local Windows environment; keep changes on `testing`. Do not deploy while Sifu is running, and never launch or control Sifu from Codex.

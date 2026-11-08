@@ -10,6 +10,8 @@ inline std::uint32_t AAIDirectorActor_RegisterOrRemoveForTarget = 0;
 inline std::uint32_t AAIDirectorActor_RemoveActorFromCombatRolesForTarget = 0;
 inline std::uint32_t AAIDirectorActor_RequestCombatRoleRedistribution = 0;
 inline std::uint32_t AAIDirectorActor_StaticClass = 0;
+inline std::uint32_t AAISituationActor_StaticClass = 0;
+inline std::uint32_t AAISpawner_StaticClass = 0;
 inline std::uint32_t AActor_K2_DestroyActor = 0;
 inline std::uint32_t AActor_K2_OnReset = 0;
 inline std::uint32_t AActor_Reset = 0;
@@ -42,6 +44,11 @@ inline std::uint32_t FMemory_Free = 0;
 inline std::uint32_t FName_FromWide = 0;
 inline std::uint32_t GEngine = 0;
 inline std::uint32_t GWorld = 0;
+inline std::uint32_t M_AAISituationActor_iCurrentLastManOccuranceCount = 0;
+inline std::uint32_t M_AAISpawner_fRespawnTime = 0;
+inline std::uint32_t M_AAISpawner_fSpawnDelay = 0;
+inline std::uint32_t M_AAISpawner_iChargesToAddWhenKilled = 0;
+inline std::uint32_t M_AAISpawner_iDeathCounterDecreaseWhenKilled = 0;
 inline std::uint32_t M_AActor_CustomTimeDilation = 0;
 inline std::uint32_t M_AController_ControlRotation = 0;
 inline std::uint32_t M_AFightingCharacter_AttackComponent = 0;
@@ -67,14 +74,20 @@ inline std::uint32_t M_FMinimalViewInfo_Location = 0;
 inline std::uint32_t M_FMinimalViewInfo_Rotation = 0;
 inline std::uint32_t M_FTViewTarget_POV = 0;
 inline std::uint32_t M_FTViewTarget_Target = 0;
+inline std::uint32_t M_UAIFightingComponent_iCurrentPhaseNodeIndex = 0;
+inline std::uint32_t M_UAIFightingComponent_iLastPhaseNodeIndex = 0;
 inline std::uint32_t M_UAttackComponent_DefaultCombo = 0;
+inline std::uint32_t M_UAttackComponent_eDangerState = 0;
+inline std::uint32_t M_UAttackComponent_fDangerTimeOut = 0;
 inline std::uint32_t M_UCharacterHealthComponent_eDownState = 0;
 inline std::uint32_t M_UCharacterHealthComponent_fGhostDamage = 0;
+inline std::uint32_t M_UCharacterMovementComponent_MaxWalkSpeed = 0;
 inline std::uint32_t M_UDefenseComponent_fCurrentGuard = 0;
 inline std::uint32_t M_UHealthComponent_fHealth = 0;
 inline std::uint32_t M_UHealthComponent_fMaxHealth = 0;
 inline std::uint32_t M_UPlayerFightingComponent_iOutfitIndex = 0;
 inline std::uint32_t M_USCAnimInstance_CachedCurrentPoseAsset = 0;
+inline std::uint32_t M_USCAnimInstance_fCinematicOverallWeight = 0;
 inline std::uint32_t M_UThePlainesGameInstance_loadingScreen = 0;
 inline std::uint32_t M_UWorld_OwningGameInstance = 0;
 inline std::uint32_t OrderAttack_GetAnimPlayed = 0;
@@ -106,6 +119,7 @@ inline std::uint32_t UCharacterHealthComponent_OnRepSetIsDown = 0;
 inline std::uint32_t UCharacterHealthComponent_SetIsDown = 0;
 inline std::uint32_t UCharacterHealthComponent_StaticClass = 0;
 inline std::uint32_t UCharacterMovementComponent_RequestDirectMove = 0;
+inline std::uint32_t UCharacterMovementComponent_StaticClass = 0;
 inline std::uint32_t UDefenseComponent_Get = 0;
 inline std::uint32_t UDefenseComponent_StaticClass = 0;
 inline std::uint32_t UEngine_GetWorldFromContextObject = 0;
@@ -122,6 +136,7 @@ inline std::uint32_t UObject_FindFunction = 0;
 inline std::uint32_t UObject_ProcessEvent = 0;
 inline std::uint32_t UOrderComponent_MultiCastPlayOrder_Impl = 0;
 inline std::uint32_t UOrderComponent_PlayOrder = 0;
+inline std::uint32_t UOrderComponent_StaticClass = 0;
 inline std::uint32_t UPlayerAnim_BPF_SetSpeedState = 0;
 inline std::uint32_t UPlayerAnim_NativeUpdateAnimation = 0;
 inline std::uint32_t UPlayerFightingComponent_OnStatsUpdated = 0;
@@ -152,12 +167,12 @@ struct BuildEntry {
     std::uint32_t time_date_stamp;
     std::uint32_t size_of_image;
     const char* name;
-    std::uint32_t values[141];
+    std::uint32_t values[156];
 };
 
 inline constexpr BuildEntry kBuilds[] = {
-    {0x68400CB9, 0x064DB000, "epic", {0x01862EB0, 0x01864BC0, 0x018656D0, 0x01BF2230, 0x03287EC0, 0x00000000, 0x00000000, 0x0328FD30, 0x00A5FE10, 0x019A96F0, 0x0487D430, 0x01A7AB80, 0x02BC2FA0, 0x019B48C0, 0x019B58F0, 0x019B5960, 0x019BC680, 0x019C4FF0, 0x019C7AA0, 0x01C5D2A0, 0x01A1FD90, 0x00000000, 0x00000000, 0x037562A0, 0x00C657A0, 0x00C632D0, 0x01A21240, 0x00000000, 0x00000000, 0x01A6C9B0, 0x01897150, 0x01959BE0, 0x00000000, 0x01E7B2C0, 0x05EBD0E8, 0x05EC09E8, 0x000000F4, 0x00000000, 0x00001308, 0x000012A8, 0x00001350, 0x00001530, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x0000039C, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000608, 0x00000000, 0x00000198, 0x00000160, 0x00000138, 0x00000140, 0x0000033C, 0x00000390, 0x00000000, 0x00000000, 0x01AD3470, 0x01ADC9C0, 0x01AFFE70, 0x015F6FA0, 0x01B15A40, 0x01ADF720, 0x0207C2A0, 0x018B1560, 0x01BF3B00, 0x032C78D0, 0x032C7DD0, 0x018E87F0, 0x0192B650, 0x01933920, 0x0193D710, 0x01943EB0, 0x019469F0, 0x01946C80, 0x01C13DC0, 0x03BEF6B0, 0x03C61040, 0x01A5C0D0, 0x01A630F0, 0x01A63AA0, 0x01A65E10, 0x01A66D60, 0x01A6C380, 0x01C37B50, 0x033D0260, 0x01959BF0, 0x01C4E5B0, 0x038EB700, 0x01ABA350, 0x034EFE30, 0x03508690, 0x0350AD00, 0x03516DC0, 0x01A499D0, 0x01A63A80, 0x01A643F0, 0x020714D0, 0x02055490, 0x020595C0, 0x01ADAA60, 0x01AE4F20, 0x0192BBF0, 0x0193E250, 0x01A07A80, 0x00000000, 0x00000000, 0x00000000, 0x01B5B760, 0x00000000, 0x018638B0, 0x00BE6DE0, 0x00BEDCE0, 0x0195EAC0, 0x00C5FCF0, 0x01B779B0, 0x01B848D0, 0x01B92950, 0x0195EF30, 0x019E4290, 0x00000000, 0x00000000, 0x01BC1460, 0x00000000, 0x035D84F0, 0x035D9030, 0x00000000}},
-    {0x68409AB0, 0x06295000, "steam", {0x016A2590, 0x016A42A0, 0x016A4DB0, 0x01A329A0, 0x030CD890, 0x037A4B80, 0x030D4690, 0x030D5700, 0x00902540, 0x017E8F10, 0x0468BE80, 0x018BADB0, 0x02A06AF0, 0x017F40E0, 0x017F5110, 0x017F5180, 0x017FBEA0, 0x01804810, 0x018072C0, 0x01A9D9E0, 0x0185F830, 0x03361A60, 0x03361CF0, 0x0359C360, 0x00AA0D60, 0x00A9E5E0, 0x01860CE0, 0x00AD6AD0, 0x037A23A0, 0x018ACAB0, 0x016D6830, 0x01799400, 0x01BD5870, 0x01CBC490, 0x05C98FA8, 0x05C9C8A8, 0x000000F4, 0x00000318, 0x00001308, 0x000012A8, 0x00001350, 0x00001530, 0x00000300, 0x00001B70, 0x00002170, 0x00001530, 0x000002B8, 0x00000F20, 0x000027A0, 0x00000348, 0x000003D8, 0x0000039C, 0x00000380, 0x0000037C, 0x00000378, 0x00000010, 0x00000018, 0x00000000, 0x0000000C, 0x00000010, 0x00000000, 0x00000608, 0x0000019D, 0x00000198, 0x00000160, 0x00000138, 0x00000140, 0x0000033C, 0x00000390, 0x00000330, 0x00000180, 0x019136A0, 0x0191CBF0, 0x019400D0, 0x01434720, 0x01955CA0, 0x0191F950, 0x01EBE130, 0x016F0CC0, 0x01A34270, 0x0310D2B0, 0x0310D7B0, 0x01727F80, 0x0176AE60, 0x01773130, 0x0177CF30, 0x017836D0, 0x01786210, 0x017864A0, 0x01A54530, 0x03A35BB0, 0x03AA75E0, 0x0189C1D0, 0x018A31F0, 0x018A3BA0, 0x018A5F10, 0x018A6E60, 0x018AC480, 0x01A782C0, 0x03215C80, 0x01799410, 0x01A8ECF0, 0x037317D0, 0x018FA580, 0x03335C10, 0x0334E470, 0x03350AE0, 0x0335CBA0, 0x01889930, 0x018A3B80, 0x018A44F0, 0x01EB3360, 0x01E971D0, 0x01E9B300, 0x0191AC90, 0x01925150, 0x0176B400, 0x0177DA70, 0x018474F0, 0x03763030, 0x037636B0, 0x0376A530, 0x0199BA90, 0x019B7240, 0x016A2F90, 0x00A202E0, 0x00A27270, 0x0179E2E0, 0x00A9B000, 0x019B7FB0, 0x019C4EE0, 0x019D2F60, 0x0179E750, 0x01823AB0, 0x0185F650, 0x01A26810, 0x01A01AA0, 0x0378BB80, 0x0341E2E0, 0x0341EE20, 0x0341F870}},
+    {0x68400CB9, 0x064DB000, "epic", {0x01862EB0, 0x01864BC0, 0x018656D0, 0x01BF2230, 0x00000000, 0x00000000, 0x03287EC0, 0x00000000, 0x00000000, 0x0328FD30, 0x00A5FE10, 0x019A96F0, 0x0487D430, 0x01A7AB80, 0x02BC2FA0, 0x019B48C0, 0x019B58F0, 0x019B5960, 0x019BC680, 0x019C4FF0, 0x019C7AA0, 0x01C5D2A0, 0x01A1FD90, 0x00000000, 0x00000000, 0x037562A0, 0x00C657A0, 0x00C632D0, 0x01A21240, 0x00000000, 0x00000000, 0x01A6C9B0, 0x01897150, 0x01959BE0, 0x00000000, 0x01E7B2C0, 0x05EBD0E8, 0x05EC09E8, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x000000F4, 0x00000000, 0x00001308, 0x000012A8, 0x00001350, 0x00001530, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x0000039C, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000608, 0x00000000, 0x00000000, 0x00000000, 0x00000198, 0x00000000, 0x00000160, 0x00000138, 0x00000140, 0x0000033C, 0x00000390, 0x00000000, 0x00000000, 0x00000000, 0x01AD3470, 0x01ADC9C0, 0x01AFFE70, 0x015F6FA0, 0x01B15A40, 0x01ADF720, 0x0207C2A0, 0x018B1560, 0x01BF3B00, 0x032C78D0, 0x032C7DD0, 0x018E87F0, 0x0192B650, 0x01933920, 0x0193D710, 0x01943EB0, 0x019469F0, 0x01946C80, 0x01C13DC0, 0x03BEF6B0, 0x03C61040, 0x01A5C0D0, 0x01A630F0, 0x01A63AA0, 0x01A65E10, 0x01A66D60, 0x01A6C380, 0x01C37B50, 0x033D0260, 0x00000000, 0x01959BF0, 0x01C4E5B0, 0x038EB700, 0x01ABA350, 0x034EFE30, 0x03508690, 0x0350AD00, 0x03516DC0, 0x01A499D0, 0x01A63A80, 0x01A643F0, 0x020714D0, 0x02055490, 0x020595C0, 0x01ADAA60, 0x01AE4F20, 0x00000000, 0x0192BBF0, 0x0193E250, 0x01A07A80, 0x00000000, 0x00000000, 0x00000000, 0x01B5B760, 0x00000000, 0x018638B0, 0x00BE6DE0, 0x00BEDCE0, 0x0195EAC0, 0x00C5FCF0, 0x01B779B0, 0x01B848D0, 0x01B92950, 0x0195EF30, 0x019E4290, 0x00000000, 0x00000000, 0x01BC1460, 0x00000000, 0x035D84F0, 0x035D9030, 0x00000000}},
+    {0x68409AB0, 0x06295000, "steam", {0x016A2590, 0x016A42A0, 0x016A4DB0, 0x01A329A0, 0x01A3EF50, 0x01A3F170, 0x030CD890, 0x037A4B80, 0x030D4690, 0x030D5700, 0x00902540, 0x017E8F10, 0x0468BE80, 0x018BADB0, 0x02A06AF0, 0x017F40E0, 0x017F5110, 0x017F5180, 0x017FBEA0, 0x01804810, 0x018072C0, 0x01A9D9E0, 0x0185F830, 0x03361A60, 0x03361CF0, 0x0359C360, 0x00AA0D60, 0x00A9E5E0, 0x01860CE0, 0x00AD6AD0, 0x037A23A0, 0x018ACAB0, 0x016D6830, 0x01799400, 0x01BD5870, 0x01CBC490, 0x05C98FA8, 0x05C9C8A8, 0x0000042C, 0x00000418, 0x0000041C, 0x00000430, 0x00000434, 0x000000F4, 0x00000318, 0x00001308, 0x000012A8, 0x00001350, 0x00001530, 0x00000300, 0x00001B70, 0x00002170, 0x00001530, 0x000002B8, 0x00000F20, 0x000027A0, 0x00000348, 0x000003D8, 0x0000039C, 0x00000380, 0x0000037C, 0x00000378, 0x00000010, 0x00000018, 0x00000000, 0x0000000C, 0x00000010, 0x00000000, 0x00000568, 0x00000628, 0x00000608, 0x00000930, 0x0000092C, 0x0000019D, 0x00000198, 0x0000019C, 0x00000160, 0x00000138, 0x00000140, 0x0000033C, 0x00000390, 0x00000378, 0x00000330, 0x00000180, 0x019136A0, 0x0191CBF0, 0x019400D0, 0x01434720, 0x01955CA0, 0x0191F950, 0x01EBE130, 0x016F0CC0, 0x01A34270, 0x0310D2B0, 0x0310D7B0, 0x01727F80, 0x0176AE60, 0x01773130, 0x0177CF30, 0x017836D0, 0x01786210, 0x017864A0, 0x01A54530, 0x03A35BB0, 0x03AA75E0, 0x0189C1D0, 0x018A31F0, 0x018A3BA0, 0x018A5F10, 0x018A6E60, 0x018AC480, 0x01A782C0, 0x03215C80, 0x015FAA90, 0x01799410, 0x01A8ECF0, 0x037317D0, 0x018FA580, 0x03335C10, 0x0334E470, 0x03350AE0, 0x0335CBA0, 0x01889930, 0x018A3B80, 0x018A44F0, 0x01EB3360, 0x01E971D0, 0x01E9B300, 0x0191AC90, 0x01925150, 0x01AA9F60, 0x0176B400, 0x0177DA70, 0x018474F0, 0x03763030, 0x037636B0, 0x0376A530, 0x0199BA90, 0x019B7240, 0x016A2F90, 0x00A202E0, 0x00A27270, 0x0179E2E0, 0x00A9B000, 0x019B7FB0, 0x019C4EE0, 0x019D2F60, 0x0179E750, 0x01823AB0, 0x0185F650, 0x01A26810, 0x01A01AA0, 0x0378BB80, 0x0341E2E0, 0x0341EE20, 0x0341F870}},
 };
 
 inline constexpr int kBuildCount = sizeof(kBuilds) / sizeof(kBuilds[0]);
@@ -174,6 +189,8 @@ inline const char* SelectBuild(std::uint32_t time_date_stamp,
         AAIDirectorActor_RemoveActorFromCombatRolesForTarget = entry.values[i++];
         AAIDirectorActor_RequestCombatRoleRedistribution = entry.values[i++];
         AAIDirectorActor_StaticClass = entry.values[i++];
+        AAISituationActor_StaticClass = entry.values[i++];
+        AAISpawner_StaticClass = entry.values[i++];
         AActor_K2_DestroyActor = entry.values[i++];
         AActor_K2_OnReset = entry.values[i++];
         AActor_Reset = entry.values[i++];
@@ -206,6 +223,11 @@ inline const char* SelectBuild(std::uint32_t time_date_stamp,
         FName_FromWide = entry.values[i++];
         GEngine = entry.values[i++];
         GWorld = entry.values[i++];
+        M_AAISituationActor_iCurrentLastManOccuranceCount = entry.values[i++];
+        M_AAISpawner_fRespawnTime = entry.values[i++];
+        M_AAISpawner_fSpawnDelay = entry.values[i++];
+        M_AAISpawner_iChargesToAddWhenKilled = entry.values[i++];
+        M_AAISpawner_iDeathCounterDecreaseWhenKilled = entry.values[i++];
         M_AActor_CustomTimeDilation = entry.values[i++];
         M_AController_ControlRotation = entry.values[i++];
         M_AFightingCharacter_AttackComponent = entry.values[i++];
@@ -231,14 +253,20 @@ inline const char* SelectBuild(std::uint32_t time_date_stamp,
         M_FMinimalViewInfo_Rotation = entry.values[i++];
         M_FTViewTarget_POV = entry.values[i++];
         M_FTViewTarget_Target = entry.values[i++];
+        M_UAIFightingComponent_iCurrentPhaseNodeIndex = entry.values[i++];
+        M_UAIFightingComponent_iLastPhaseNodeIndex = entry.values[i++];
         M_UAttackComponent_DefaultCombo = entry.values[i++];
+        M_UAttackComponent_eDangerState = entry.values[i++];
+        M_UAttackComponent_fDangerTimeOut = entry.values[i++];
         M_UCharacterHealthComponent_eDownState = entry.values[i++];
         M_UCharacterHealthComponent_fGhostDamage = entry.values[i++];
+        M_UCharacterMovementComponent_MaxWalkSpeed = entry.values[i++];
         M_UDefenseComponent_fCurrentGuard = entry.values[i++];
         M_UHealthComponent_fHealth = entry.values[i++];
         M_UHealthComponent_fMaxHealth = entry.values[i++];
         M_UPlayerFightingComponent_iOutfitIndex = entry.values[i++];
         M_USCAnimInstance_CachedCurrentPoseAsset = entry.values[i++];
+        M_USCAnimInstance_fCinematicOverallWeight = entry.values[i++];
         M_UThePlainesGameInstance_loadingScreen = entry.values[i++];
         M_UWorld_OwningGameInstance = entry.values[i++];
         OrderAttack_GetAnimPlayed = entry.values[i++];
@@ -270,6 +298,7 @@ inline const char* SelectBuild(std::uint32_t time_date_stamp,
         UCharacterHealthComponent_SetIsDown = entry.values[i++];
         UCharacterHealthComponent_StaticClass = entry.values[i++];
         UCharacterMovementComponent_RequestDirectMove = entry.values[i++];
+        UCharacterMovementComponent_StaticClass = entry.values[i++];
         UDefenseComponent_Get = entry.values[i++];
         UDefenseComponent_StaticClass = entry.values[i++];
         UEngine_GetWorldFromContextObject = entry.values[i++];
@@ -286,6 +315,7 @@ inline const char* SelectBuild(std::uint32_t time_date_stamp,
         UObject_ProcessEvent = entry.values[i++];
         UOrderComponent_MultiCastPlayOrder_Impl = entry.values[i++];
         UOrderComponent_PlayOrder = entry.values[i++];
+        UOrderComponent_StaticClass = entry.values[i++];
         UPlayerAnim_BPF_SetSpeedState = entry.values[i++];
         UPlayerAnim_NativeUpdateAnimation = entry.values[i++];
         UPlayerFightingComponent_OnStatsUpdated = entry.values[i++];

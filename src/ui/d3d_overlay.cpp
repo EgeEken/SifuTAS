@@ -16,6 +16,7 @@
 #include "../tas/checkpoint.h"
 #include "../tas/controls.h"
 #include "../tas/input_trace.h"
+#include "../tas/reset_diagnostics.h"
 #include "overlay.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -185,6 +186,43 @@ void DrawSavestatesTab() {
     const tas::checkpoint::Status status = tas::checkpoint::GetStatus();
     ImGui::TextDisabled("Experimental state snapshot. Combat actions and encounter progression are not restored.");
     if (!ImGui::CollapsingHeader("Advanced / diagnostics")) return;
+    const auto diagnostics = tas::reset_diagnostics::GetStatus();
+    const bool trace_busy = diagnostics.trace_state == tas::reset_diagnostics::TraceState::Queued ||
+                            diagnostics.trace_state == tas::reset_diagnostics::TraceState::Capturing ||
+                            diagnostics.writer_active;
+    ImGui::BeginDisabled(trace_busy);
+    if (ImGui::Button("Capture ProcessEvent trace (5 s)"))
+        tas::reset_diagnostics::QueueProcessEventCapture();
+    ImGui::EndDisabled();
+    switch (diagnostics.trace_state) {
+        case tas::reset_diagnostics::TraceState::Ready:
+            ImGui::TextDisabled("ProcessEvent trace is opt-in and captures at most 2048 calls.");
+            break;
+        case tas::reset_diagnostics::TraceState::Queued:
+            ImGui::Text("ProcessEvent trace queued for the next game-thread tick.");
+            break;
+        case tas::reset_diagnostics::TraceState::Capturing:
+            ImGui::Text("Capturing ProcessEvent calls: %u / 2048", diagnostics.trace_events);
+            break;
+        case tas::reset_diagnostics::TraceState::Complete:
+            ImGui::Text("Trace complete: %u events, %u overflowed%s", diagnostics.trace_events,
+                        diagnostics.trace_dropped,
+                        diagnostics.writer_active ? "; writing log" : "");
+            break;
+        case tas::reset_diagnostics::TraceState::Failed:
+            ImGui::Text("ProcessEvent trace unavailable; see SifuCoop.log.");
+            break;
+    }
+    ImGui::TextWrapped("%s", diagnostics.last_result);
+    ImGui::Separator();
+    if (ImGui::Button("Capture encounter baseline"))
+        tas::reset_diagnostics::QueueBaselineCapture();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!diagnostics.baseline_saved || diagnostics.comparison_waiting);
+    if (ImGui::Button("Compare current state"))
+        tas::reset_diagnostics::QueueStateComparison();
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Capture before Reset Situation, trigger reset manually, then compare. Read-only; see reset-diff records in SifuCoop.log.");
     ImGui::Text("World actors: %u; active candidates: %u; captured: %u; capacity: 32",
                 status.world_actor_count, status.enumerated_count, status.captured_count);
     ImGui::Text("Excluded: pooled %u, invalid %u, missing health %u, inactive %u, identity too long %u / unavailable %u, capacity %u",

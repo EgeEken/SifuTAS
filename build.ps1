@@ -74,6 +74,7 @@ $sources = @(
     "src\tas\controls.cpp"
     "src\tas\input_trace.cpp"
     "src\tas\reset_trace.cpp"
+    "src\tas\reset_diagnostics.cpp"
     "src\tas\checkpoint.cpp"
     "src\core\trace.cpp"
     "src\ue\reflection.cpp"

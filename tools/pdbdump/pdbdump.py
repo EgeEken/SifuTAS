@@ -221,6 +221,12 @@ WANTED = {
 
 
     "UAIFightingComponent_StaticClass": ["?StaticClass@UAIFightingComponent@@SA"],
+    "AAISituationActor_StaticClass": ["?StaticClass@AAISituationActor@@SA"],
+    "AAISpawner_StaticClass": ["?StaticClass@AAISpawner@@SA"],
+    "UOrderComponent_StaticClass": ["?StaticClass@UOrderComponent@@SA"],
+    "UCharacterMovementComponent_StaticClass": [
+        "?StaticClass@UCharacterMovementComponent@@SA"
+    ],
 
 
 
@@ -318,6 +324,23 @@ WANTED_MEMBERS = {
     "M_AFightingCharacter_AttackComponent": ("AFightingCharacter", "m_AttackComponent"),
     "M_AFightingCharacter_DefenseComponent": ("AFightingCharacter", "m_DefenseComponent"),
     "M_UAttackComponent_DefaultCombo": ("UAttackComponent", "m_DefaultCombo"),
+    "M_UAttackComponent_fDangerTimeOut": ("UAttackComponent", "m_fDangerTimeOut"),
+    "M_UAttackComponent_eDangerState": ("UAttackComponent", "m_eDangerState"),
+    "M_UAIFightingComponent_iCurrentPhaseNodeIndex": (
+        "UAIFightingComponent", "m_iCurrentPhaseNodeIndex"),
+    "M_UAIFightingComponent_iLastPhaseNodeIndex": (
+        "UAIFightingComponent", "m_iLastPhaseNodeIndex"),
+    "M_AAISituationActor_iCurrentLastManOccuranceCount": (
+        "AAISituationActor", "m_iCurrentLastManOccuranceCount"),
+    "M_AAISpawner_fRespawnTime": ("AAISpawner", "m_fRespawnTime"),
+    "M_AAISpawner_fSpawnDelay": ("AAISpawner", "m_fSpawnDelay"),
+    "M_AAISpawner_iChargesToAddWhenKilled": ("AAISpawner", "m_iChargesToAddWhenKilled"),
+    "M_AAISpawner_iDeathCounterDecreaseWhenKilled": (
+        "AAISpawner", "m_iDeathCounterDecreaseWhenKilled"),
+    "M_UCharacterMovementComponent_MaxWalkSpeed": (
+        "UCharacterMovementComponent", "MaxWalkSpeed"),
+    "M_USCAnimInstance_fCinematicOverallWeight": (
+        "USCAnimInstance", "m_fCinematicOverallWeight"),
 
 
     "M_AThePlainesGameState_fRoomClearedLifePercent": ("AThePlainesGameState",

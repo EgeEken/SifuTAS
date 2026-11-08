@@ -2598,6 +2598,35 @@ bool EnumerateWorldFighters(ue::UObject** out, int capacity, int* count_out,
     return true;
 }
 
+bool EnumerateActorsOfClass(void* actor_class, ue::UObject** out, int capacity,
+                            int* count_out, int* total_out) {
+    if (count_out) *count_out = 0;
+    if (total_out) *total_out = 0;
+    if (!g_get_all_actors || !actor_class || !out || capacity <= 0) return false;
+    ue::UObject* world = ue::GetWorld();
+    if (!world) return false;
+    g_get_all_actors(world, actor_class, &g_actors);
+    if (g_actors.num < 0 || (g_actors.num > 0 && !g_actors.data)) return false;
+    if (total_out) *total_out = g_actors.num;
+
+    int count = 0;
+    const int available = g_actors.num < capacity ? g_actors.num : capacity;
+    for (int i = 0; i < available; ++i) {
+        ue::UObject* actor = g_actors.data[i];
+        if (!ue::IsAliveObject(actor)) continue;
+        bool duplicate = false;
+        for (int j = 0; j < count; ++j) {
+            if (out[j] == actor) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) out[count++] = actor;
+    }
+    if (count_out) *count_out = count;
+    return true;
+}
+
 void TickEnemies() {
     static bool list_key = false;
 

@@ -27,6 +27,7 @@
 #include "../tas/checkpoint.h"
 #include "../tas/input_trace.h"
 #include "../tas/reset_trace.h"
+#include "../tas/reset_diagnostics.h"
 #include "../ui/overlay.h"
 
 namespace sifucoop::hooks {
@@ -496,6 +497,7 @@ void __fastcall TickHook(void* self, float delta_seconds, bool idle_mode) {
     g_original_tick(self, delta_seconds, idle_mode);
     tas::input_trace::EngineTickEnd();
     tas::reset_trace::Tick();
+    tas::reset_diagnostics::Tick();
     if (g_paused.load(std::memory_order_relaxed) ||
         std::fabs(g_tas_multiplier.load(std::memory_order_relaxed) - 1.f) > 0.001f)
         RefreshGameplayControlState();
@@ -564,6 +566,7 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
         SC_LOG("inputtrace: APlayerController::InputKey hook unavailable");
     tas::input_trace::InstallHooks(base);
     tas::reset_trace::InstallHooks(base);
+    tas::reset_diagnostics::InstallHooks(base);
 
     if (offsets::AWorldSettings_GetEffectiveTimeDilation) {
         g_effective_time_dilation_target =
@@ -640,6 +643,7 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
 }
 
 void RemoveTickHook() {
+    tas::reset_diagnostics::RemoveHooks();
     tas::reset_trace::RemoveHooks();
     tas::input_trace::RemoveHooks();
     if (g_set_demo_play_time_dilation_target) {
