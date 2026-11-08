@@ -495,6 +495,7 @@ void __fastcall TickHook(void* self, float delta_seconds, bool idle_mode) {
     tas::input_trace::EngineTickBegin(delta_seconds, idle_mode);
     g_original_tick(self, delta_seconds, idle_mode);
     tas::input_trace::EngineTickEnd();
+    tas::reset_trace::Tick();
     if (g_paused.load(std::memory_order_relaxed) ||
         std::fabs(g_tas_multiplier.load(std::memory_order_relaxed) - 1.f) > 0.001f)
         RefreshGameplayControlState();
