@@ -2,9 +2,9 @@
 
 **Experimental Windows mod for Sifu — development build, not a release.**
 
-Goal: tool-assisted, choreographed combat footage with precise slowdown, frame stepping, and eventually input editing, replay, checkpoints and savestates. This is for creative gameplay videos, **not** verified competitive TAS speedrun files.
+Goal: tool-assisted, choreographed combat footage with precise slowdown and savestates. Savestates are the primary development objective. Input recording and native replay are secondary and should only be developed when they directly support state restoration. This is for creative gameplay videos, **not** verified competitive TAS speedrun files.
 
-The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** Slowdown, pause, frame stepping, gameplay mouse behavior, configurable controls, settings persistence, GUI scaling, and the continuous speed slider were reported working in-game. The existing checkpoint restores only selected actor fields; combat actions and encounter progression are not restored. It is labeled an experimental state snapshot. Camera motion after resume and combat-action restoration remain unresolved. This pass adds a native Sifu replay recorder in the GUI and a stricter active-match guard; both await in-game verification.
+The `testing` branch is the development branch. **Do not install from `main` or publish a release yet.** Slowdown, pause, frame stepping, gameplay mouse behavior, configurable controls, settings persistence, GUI scaling, and the continuous speed slider were reported working in-game. The current checkpoint remains an experimental actor snapshot: combat actions, AI, physics, and encounter progression are not restored. Development is now focused on using Sifu's own encounter reset and then reapplying a checkpoint to the initialized actors. This pass adds observation hooks for Unreal actor/game-mode resets and Sifu's map-restart function; it does not invoke them or claim a working reset-based restore.
 
 ## Current prototype
 

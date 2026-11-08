@@ -1,12 +1,14 @@
 # Phase 1 test procedure (Windows)
 
-The current pass adds centralized TAS-control state guards and native Sifu replay recording controls; these changes need runtime testing. Verify F1, F2, F3-F5, and the GUI Playback controls in Free Training, then transition to death/game-over, an arena victory/results screen, a loading screen, Sifu's pause menu, and a front-end/menu level. Confirm the world continues progressing in every unsupported state, TAS pause releases on transition, queued steps do not fire afterward, and the effective multiplier reports 1.0×. The selected multiplier and configured presets should remain unchanged. Unknown/unreadable state must leave the world unpaused and at 1.0×.
+Savestate restoration is the primary development objective. The current checkpoint restores selected actor fields only. This pass adds passive reset-call diagnostics; it does not invoke reset functions or apply checkpoint data after reset. Runtime gameplay testing is performed manually by the user. Codex must never launch, close, kill, or control Sifu.
 
 The Snapshot tab and F7/F8 now call the feature an **experimental state snapshot**. It restores selected actor fields only; combat actions and encounter progression are not restored.
 
 For native replay, open F6, use the Recording tab's Start control (or F10), close the GUI and perform a short Free Training sequence, then reopen F6 and Stop (or press F10). Check GUI status and `replay:` log entries for system/instance availability, `CanStartRecording`, disabled state, active recording plus demo driver, and finalized nonzero length. Verify the entry in Sifu's Replay Editor. No manual `SifuCoop.ini` change is needed. The F10 action only polls while Sifu is focused. This records Sifu's native replay stream, not TAS inputs. Eligibility and Replay Editor visibility remain to be tested; do not treat the result as a savestate.
 
 The Recording tab's **Capture input trace (5 s)** control is diagnostic only. It buffers up to 8192 events, then writes the trace to `SifuCoop.log`: controller key events, local `UPlayerInput` key/axis callbacks, input-stack begin/end, and engine/world tick begin/end, with event order, relative microseconds, thread ID, key/axis values, and engine/world tick indices. Check the initial `inputtrace: hooks ready` line and the completion summary for event counts, drops, and local `PlayerInput` availability. The trace has not yet been captured in-game; it does not inject inputs or establish deterministic replay. Repeated Free Training Reset Situation states have not been measured.
+
+For reset discovery, manually activate Free Training's **Reset Situation** command and inspect `tas: reset trace` events for `AGameModeBase::Reset`, `AGameModeBase::ResetLevel`, `AActor::Reset`, `AActor::K2_OnReset`, and `UWGGameFlow::BPF_RestartCurrentMap`. GameMode and map-restart entries have begin/end events around the native call. Each event includes object path, current level, and caller RVA. Compare player/opponent pointers and paths, transforms, vitals, movement, and animation at idle after repeated resets. These hooks only observe; they do not initiate a reset or restore checkpoint data. Do not install a DLL while Sifu is running.
 
 For safe-state control, verify `MatchState=InProgress` in Free Training and a story/arena encounter. Confirm F1/F2 and speed controls work there, then reach an arena victory/results screen and confirm the guard reports an unsupported match state, releases TAS pause, and restores effective 1.0× speed while preserving the selected preset. Check the main menu and map-loading transitions as well.
 
@@ -99,6 +101,7 @@ Diagnostic strings:
 - `tas: checkpoint restore actor[...] cloth_reset=queued|unavailable`: reset request to apply on a later skeletal-mesh cloth update.
 - `tas: checkpoint saved ... world_actors=... pooled=... identity_truncated=... capacity_skipped=...`: raw and filtered actor counts.
 - `tas: checkpoint load refused: ...`: death/down/game-over/seamless-travel or unvalidated player state refused before mutation.
+- `tas: reset trace event=...`: an Unreal actor/game-mode reset or Sifu map-restart function was observed; this does not prove the full encounter was reinitialized.
 
 Report: storefront, executable build fingerprint, exact build command, compiler errors (if any), log excerpt, key behavior, crash/hang details. Do not upload game executable, PDB or other proprietary data.
 

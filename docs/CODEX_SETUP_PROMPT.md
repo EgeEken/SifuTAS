@@ -20,6 +20,8 @@ Tasks:
 7. Read `%LOCALAPPDATA%\Sifu\Saved\Logs\SifuCoop.log`, summarize the result, and propose the next smallest fix based on compiler/log evidence. Test if rendering continues during pause and whether F2 actually advances exactly one gameplay step.
 8. Update the local docs/test notes with actual results and unresolved blockers if useful. Commit and push completed development passes to `testing`; report each commit SHA. Never modify or merge into `main` without explicit authorization. Follow the standing DLL replacement authorization and checks above; never deploy an unknown or unrelated DLL.
 
-My goal is editing spectacular, inhuman Sifu combat videos. Frame stepping and slowdown are first; later we want programmable inputs, editable recordings, reproducible playbacks, checkpoints and savestates. Reuse the existing SifuCoop machinery rather than rebuilding it from scratch. Keep changes focused and verify every claim.
+My goal is editing spectacular, inhuman Sifu combat videos. Savestates are the primary goal, beginning with coherent restoration after Sifu's own Free Training encounter reset. Slowdown and frame stepping remain established controls. Input recording and native replay are secondary unless they directly support restoration. Reuse the existing SifuCoop machinery rather than rebuilding it from scratch. Keep changes focused and verify every claim.
+
+Never launch, close, kill, or control Sifu. The user performs all runtime testing manually. If Sifu is running, do not deploy or replace a DLL.
 
 ---

@@ -26,6 +26,7 @@
 #include "../tas/controls.h"
 #include "../tas/checkpoint.h"
 #include "../tas/input_trace.h"
+#include "../tas/reset_trace.h"
 #include "../ui/overlay.h"
 
 namespace sifucoop::hooks {
@@ -561,6 +562,7 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
     if (!game::InstallPlayerControllerInputHook())
         SC_LOG("inputtrace: APlayerController::InputKey hook unavailable");
     tas::input_trace::InstallHooks(base);
+    tas::reset_trace::InstallHooks(base);
 
     if (offsets::AWorldSettings_GetEffectiveTimeDilation) {
         g_effective_time_dilation_target =
@@ -637,6 +639,7 @@ bool InstallTickHook(std::uintptr_t base, void* gengine) {
 }
 
 void RemoveTickHook() {
+    tas::reset_trace::RemoveHooks();
     tas::input_trace::RemoveHooks();
     if (g_set_demo_play_time_dilation_target) {
         MH_DisableHook(g_set_demo_play_time_dilation_target);

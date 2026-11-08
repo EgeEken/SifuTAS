@@ -27,6 +27,13 @@ WANTED = {
 
 
     "APlayerController_InputKey": ["?InputKey@APlayerController@@"],
+    "AActor_Reset": ["?Reset@AActor@@UEAAXXZ"],
+    "AActor_K2_OnReset": ["?K2_OnReset@AActor@@QEAAXXZ"],
+    "AGameModeBase_Reset": ["?Reset@AGameModeBase@@UEAAXXZ"],
+    "AGameModeBase_ResetLevel": ["?ResetLevel@AGameModeBase@@UEAAXXZ"],
+    "UWGGameFlow_BPF_RestartCurrentMap": [
+        "?BPF_RestartCurrentMap@UWGGameFlow@@QEAAXXZ"
+    ],
     "UPlayerInput_InputKey": ["?InputKey@UPlayerInput@@"],
     "UPlayerInput_InputAxis": ["?InputAxis@UPlayerInput@@"],
     "UPlayerInput_ProcessInputStack": ["?ProcessInputStack@UPlayerInput@@"],

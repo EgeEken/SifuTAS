@@ -53,6 +53,7 @@ struct Event {
 };
 
 SRWLOCK g_lock = SRWLOCK_INIT;
+SRWLOCK g_writer_lock = SRWLOCK_INIT;
 Event g_events[kMaxEvents] = {};
 std::uint32_t g_event_count = 0;
 std::uint32_t g_dropped_count = 0;
@@ -68,6 +69,7 @@ std::atomic<State> g_state{State::Ready};
 std::atomic<bool> g_capture_requested{false};
 std::atomic<bool> g_dumping{false};
 std::atomic<bool> g_player_input_available{false};
+HANDLE g_writer_thread = nullptr;
 void* g_player_input_key_target = nullptr;
 void* g_player_input_axis_target = nullptr;
 void* g_process_input_stack_target = nullptr;
@@ -85,6 +87,16 @@ using ProcessInputStackFn = void(__fastcall*)(void*, const void*, float, bool);
 PlayerInputKeyFn g_player_input_key = nullptr;
 PlayerInputAxisFn g_player_input_axis = nullptr;
 ProcessInputStackFn g_process_input_stack = nullptr;
+
+void WaitForWriter() {
+    AcquireSRWLockExclusive(&g_writer_lock);
+    if (g_writer_thread) {
+        WaitForSingleObject(g_writer_thread, INFINITE);
+        CloseHandle(g_writer_thread);
+        g_writer_thread = nullptr;
+    }
+    ReleaseSRWLockExclusive(&g_writer_lock);
+}
 
 std::uint64_t QpcNow() {
     LARGE_INTEGER now = {};
@@ -151,6 +163,7 @@ void FinishCapture() {
     ReleaseSRWLockExclusive(&g_lock);
     if (!g_dumping.load(std::memory_order_acquire)) return;
 
+    AcquireSRWLockExclusive(&g_writer_lock);
     HANDLE thread = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
         SC_LOG("inputtrace: complete duration_ms=%llu events=%u dropped=%u player_input=%s",
                static_cast<unsigned long long>(GetTickCount64() - g_start_ms),
@@ -173,14 +186,16 @@ void FinishCapture() {
         return 0;
     }, nullptr, 0, nullptr);
     if (thread) {
-        CloseHandle(thread);
+        g_writer_thread = thread;
     } else {
         SC_LOG("inputtrace: could not start result writer thread (error=%lu)", GetLastError());
         g_dumping.store(false, std::memory_order_release);
     }
+    ReleaseSRWLockExclusive(&g_writer_lock);
 }
 
 void StartCapture() {
+    WaitForWriter();
     ue::UObject* world = ue::GetWorld();
     ue::UObject* controller = world ? ue::GetPlayerController(world, 0) : nullptr;
     if (!ue::IsAliveObject(world) || !ue::IsAliveObject(controller)) {
@@ -294,9 +309,15 @@ bool InstallOne(std::uint32_t rva, void* detour, void** original,
     }
     *target = reinterpret_cast<void*>(base + rva);
     MH_STATUS status = MH_CreateHook(*target, detour, original);
-    if (status == MH_OK) status = MH_EnableHook(*target);
     if (status != MH_OK) {
         SC_LOG("inputtrace: %s hook failed (%d)", name, static_cast<int>(status));
+        *target = nullptr;
+        *original = nullptr;
+        return false;
+    }
+    status = MH_EnableHook(*target);
+    if (status != MH_OK) {
+        SC_LOG("inputtrace: %s hook enable failed (%d)", name, static_cast<int>(status));
         MH_RemoveHook(*target);
         *target = nullptr;
         *original = nullptr;
@@ -329,6 +350,7 @@ void InstallHooks(std::uintptr_t module_base) {
 }
 
 void RemoveHooks() {
+    WaitForWriter();
     void** targets[] = {&g_process_input_stack_target, &g_player_input_axis_target,
                         &g_player_input_key_target};
     for (void** target : targets) {
