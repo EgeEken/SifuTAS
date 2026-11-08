@@ -9,12 +9,14 @@
 #include "../core/log.h"
 #include "../core/offsets.g.h"
 #include "../ue/reflection.h"
+#include "reset_diagnostics.h"
 
 namespace sifucoop::tas::reset_trace {
 namespace {
 
 namespace offsets = sifucoop::offsets;
 namespace ue = sifucoop::ue;
+namespace diagnostics = sifucoop::tas::reset_diagnostics;
 
 using ResetFn = void(__fastcall*)(void*);
 constexpr std::uint32_t kActorDetailLimit = 32;
@@ -99,42 +101,64 @@ void FlushActorSummary() {
 
 void __fastcall ActorResetHook(void* self) {
     const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
-    if (ShouldLogActorDetail())
-        LogReset("AActor::Reset", "callback", CaptureIdentity(self, caller));
+    const ResetIdentity identity = CaptureIdentity(self, caller);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::ActorReset, true,
+                                     identity.caller_rva);
+    if (ShouldLogActorDetail()) LogReset("AActor::Reset", "begin", identity);
     if (g_actor_reset) g_actor_reset(self);
+    if (ShouldLogActorDetail()) LogReset("AActor::Reset", "end", identity);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::ActorReset, false,
+                                     identity.caller_rva);
 }
 
 void __fastcall ActorK2ResetHook(void* self) {
     const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
-    if (ShouldLogActorDetail())
-        LogReset("AActor::K2_OnReset", "callback", CaptureIdentity(self, caller));
+    const ResetIdentity identity = CaptureIdentity(self, caller);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::ActorK2Reset, true,
+                                     identity.caller_rva);
+    if (ShouldLogActorDetail()) LogReset("AActor::K2_OnReset", "begin", identity);
     if (g_actor_k2_reset) g_actor_k2_reset(self);
+    if (ShouldLogActorDetail()) LogReset("AActor::K2_OnReset", "end", identity);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::ActorK2Reset, false,
+                                     identity.caller_rva);
 }
 
 void __fastcall GameModeResetHook(void* self) {
     const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
     const ResetIdentity identity = CaptureIdentity(self, caller);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::GameModeReset, true,
+                                     identity.caller_rva);
     LogReset("AGameModeBase::Reset", "begin", identity);
     if (g_game_mode_reset) g_game_mode_reset(self);
     LogReset("AGameModeBase::Reset", "end", identity);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::GameModeReset, false,
+                                     identity.caller_rva);
     FlushActorSummary();
 }
 
 void __fastcall GameModeResetLevelHook(void* self) {
     const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
     const ResetIdentity identity = CaptureIdentity(self, caller);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::GameModeResetLevel, true,
+                                     identity.caller_rva);
     LogReset("AGameModeBase::ResetLevel", "begin", identity);
     if (g_game_mode_reset_level) g_game_mode_reset_level(self);
     LogReset("AGameModeBase::ResetLevel", "end", identity);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::GameModeResetLevel, false,
+                                     identity.caller_rva);
     FlushActorSummary();
 }
 
 void __fastcall RestartMapHook(void* self) {
     const auto caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
     const ResetIdentity identity = CaptureIdentity(self, caller);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::RestartCurrentMap, true,
+                                     identity.caller_rva);
     LogReset("UWGGameFlow::BPF_RestartCurrentMap", "begin", identity);
     if (g_restart_map) g_restart_map(self);
     LogReset("UWGGameFlow::BPF_RestartCurrentMap", "end", identity);
+    diagnostics::NotifyResetBoundary(diagnostics::ResetBoundary::RestartCurrentMap, false,
+                                     identity.caller_rva);
     FlushActorSummary();
 }
 

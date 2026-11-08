@@ -24,7 +24,12 @@ bool g_save_error_logged = false;
 
 int DefaultKey(Action action) {
     if (action == Action::ToggleNativeRecording) return VK_F10;
+    if (action == Action::ResetTraceTrigger) return VK_F12;
     return VK_F1 + static_cast<int>(action);
+}
+
+unsigned int DefaultModifiers(Action action) {
+    return action == Action::ResetTraceTrigger ? ModifierCtrl | ModifierAlt : ModifierNone;
 }
 
 bool ValidBinding(Binding binding) {
@@ -109,8 +114,10 @@ bool SaveLocked() {
 
 void SetDefaults(Settings* settings) {
     *settings = Settings{};
-    for (int i = 0; i < kActionCount; ++i)
-        settings->bindings[i] = {DefaultKey(static_cast<Action>(i)), ModifierNone};
+    for (int i = 0; i < kActionCount; ++i) {
+        const Action action = static_cast<Action>(i);
+        settings->bindings[i] = {DefaultKey(action), DefaultModifiers(action)};
+    }
 }
 
 }
@@ -274,6 +281,7 @@ const char* ActionName(Action action) {
         case Action::SaveCheckpoint: return "Save experimental snapshot";
         case Action::LoadCheckpoint: return "Load experimental snapshot";
         case Action::ToggleNativeRecording: return "Start / stop native replay recording";
+        case Action::ResetTraceTrigger: return "Trigger armed reset trace";
         default: return "Unknown action";
     }
 }

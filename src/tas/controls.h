@@ -12,6 +12,7 @@ enum class Action : int {
     SaveCheckpoint,
     LoadCheckpoint,
     ToggleNativeRecording,
+    ResetTraceTrigger,
     Count,
 };
 

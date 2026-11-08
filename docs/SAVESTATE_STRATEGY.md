@@ -18,9 +18,9 @@ Status: reset discovery diagnostics are implemented on `testing`, but no reset-b
 
 ### 1. Find the real reset entry point
 
-Current `src/tas/reset_trace.cpp` observes `AGameModeBase::Reset/ResetLevel`, `AActor::Reset/K2_OnReset`, and `UWGGameFlow::BPF_RestartCurrentMap`. The **user** should manually press Free Training's Reset Situation key and capture the resulting calls.
+Current `src/tas/reset_trace.cpp` observes `AGameModeBase::Reset/ResetLevel`, `AActor::Reset/K2_OnReset`, and `UWGGameFlow::BPF_RestartCurrentMap`. The user should capture a baseline, arm the trace, close the GUI, press the configurable marker immediately before Reset Situation, then reopen the GUI and compare. Native reset hooks are also monitored.
 
-If none fire, do **not** infer that resetting does not exist. Build an opt-in, bounded `UObject::ProcessEvent` trace for a very short window around the user's reset input. Record only function pointer, owner/class pointer, timing/order, and thread in the hot hook; resolve names **after** capture using the existing engine path-name helper. Filter/rank functions associated with `Training`, `Situation`, `Reset`, `Arena`, `Spawner`, `AI`, and `GameFlow`, but retain a bounded unfiltered trace for cases where the reset function has an unexpected name. Do not log every `ProcessEvent` synchronously or change its arguments. Resolve relevant functions through Sifu's existing reflection and PDB tooling; protect against recursion, overflow and stale pointers.
+If none fire, do **not** infer that resetting does not exist. Advanced/Diagnostics now arms a two-second trace that waits indefinitely for a trigger: it keeps the most recent 512 ProcessEvent records, then records up to 1536 calls after a reset boundary. Excess calls are aggregated by function/class pair (up to 256 pairs with first/last QPC and count); overflow is reported. The current input hooks cannot map the Reset Situation key reliably, so use the configurable Ctrl+Alt+F12 marker immediately before manually activating Reset Situation; native reset hooks are also monitored. Function/class names are resolved and logged after capture. The hook does no path conversion or disk I/O and does not modify ProcessEvent arguments.
 
 ### 2. Measure actor lifecycle across reset
 
@@ -33,7 +33,7 @@ Determine whether Reset Situation:
 - Travels to another world.
 - Clears AI orders and timers and reaches a stable post-init boundary.
 
-A reset-begin event alone is **not** a safe point to reapply a checkpoint. Require a verified completion boundary plus stable actor registry/component initialization over subsequent game-thread updates.
+A reset-begin event alone is **not** a safe point to reapply a checkpoint. Three consecutive matching registry samples are reported only as a stable observed inventory. Component availability and observed reset begin/return events are tracked separately; no signal currently proves reset initialization or pending callbacks have finished.
 
 ### 3. Inspect reflected combat state (read-only first)
 
@@ -66,18 +66,25 @@ A convincing prototype should pass repeated manual tests:
 
 Do not claim arbitrary-frame savestates, determinism, or gameplay replay from passing only transform/vitals tests.
 
-## Work that can be batched before the next user test
+## Next manual observation
 
-- Analyze Sifu PDB for combat/AI/situation component types and supported property APIs.
-- Implement the bounded read-only `ProcessEvent` capture and a pre/post-reset actor inventory; keep disabled unless armed manually.
-- Add concise status and diagnostic export (CSV/JSON or log summaries), rather than more default GUI text.
-- Keep the current passive reset hooks and input trace isolated, with bounded memory and no changes to gameplay state.
-- Make the GUI window slightly translucent without making foreground text hard to read.
+- Capture and review a manual Free Training Reset Situation trace before selecting a reset or order-cancellation API.
+- Use the new bounded trace and prioritized inventory to identify the actual reset call chain and compare the post-reset observation.
+- Review detailed logs while keeping the default GUI status concise.
+- Keep the reset and input hooks observational, bounded, and free of gameplay-state changes.
+
+## Steam PDB reset candidates (discovery only)
+
+The local Steam UE4.26.2 PDB contains no `ResetSituation`, `ResetTraining`, or `ResetEncounter` method. A name search for reset/situation/training found only `FWuguanAIManager::ResetJokerSituations` (RVA `0x0172E940`), which is specifically scoped to joker situations and is not evidence for Free Training's command. Existing observations cover standard `AGameModeBase::Reset`/`ResetLevel`, `AActor::Reset`/`K2_OnReset`, and `UWGGameFlow::BPF_RestartCurrentMap`; the last is a map-restart function with no evidence that it performs an in-place encounter reset.
+
+PDB candidate APIs include `AAISituationActor::AreAllSpawnerGroupsCleared`, `GetSpawnersUsed`, `BPF_GetAis`, `BPF_SpawnSituation`, and `BPF_UnSpawnSituation`; `AAISpawner::BPF_AskForRespawn`, `BPF_GetSpawnedAI`, and spawn/despawn callbacks; `AAIWaveRefillDirector::Initialize`, `CancelCurrentWave`, `BPF_StartNextWave`, `BPF_StartWave`, `BPF_IsWaveInProgress`, `BPF_GetAIRemainingInCurrentWave`, and wave-completion callbacks; and `AArenaGameMode::BPF_FlagArenaForRestart`. These symbols indicate separate arena-wave progression and situation/spawner lifecycles but do not prove that any is the Free Training reset path or a safe reset operation.
+
+For combat orders, `UOrderComponent` exposes `BPF_GetRunningAndPendingActionOrders`, `BPF_CancelAllOrders`, `CancelOrderByID/Type`, `FreezePendingOrders`, `InternalInitialize`, and `InternalUninitialize`. `UBrainComponent::StopLogic/RestartLogic` and `UAIFightingComponent::BPF_ResetComboToDefault` / `BPF_ResetAvoidAbilityToDefault` also exist. They are discovery candidates only: cancellation, brain restart, and combo reset do not establish restoration of animation, timers, situation progress, physics, or callbacks. Do not invoke them until runtime trace and signature/side-effect review establish their role.
 
 ## Implemented discovery diagnostics (runtime test pending)
 
-- The Savestates tab's Advanced / diagnostics section can arm a five-second `UObject::ProcessEvent` trace. The hook records at most 2048 calls in a fixed array: event order, QPC timestamp, thread ID, owner address, class address, and `UFunction` address. Overflow is counted. It performs no name conversion or file logging while the hook runs; function/class paths are resolved after capture and emitted in `SifuCoop.log`. The trace is unfiltered during its bounded capture so an unexpected Blueprint reset function is not hidden.
-- The same section can capture a read-only baseline, let the user manually trigger Reset Situation, then request a comparison. The comparison waits for three consecutive game-thread samples with the same world, actor paths, UObject addresses and component addresses; it times out after ten seconds. It records current world path/address and match state; fighting actor paths/classes/addresses; transforms, velocity, custom dilation, health/guard, attack/defense/health component addresses, AI/movement/order component addresses, active montage path, and supported scalar fields. It also inventories `AAISituationActor` and `AAISpawner` instances.
+- The Savestates tab's Advanced / diagnostics section arms a 512-record rolling pre-trigger buffer and waits indefinitely. A native reset boundary or configurable Ctrl+Alt+F12 marker begins up to two seconds of capture: 1536 detailed calls plus aggregates for up to 256 distinct function/class pairs. Records include event order, QPC timestamp, thread ID, owner/class pointers and `UFunction` pointer. Pre-ring overwrite, event aggregation, and untracked overflow are reported separately. No names are resolved or logged in the hot hook.
+- The same section provides the manual sequence: capture baseline, arm trace, close GUI, press the configured marker, activate Reset Situation, reopen GUI, compare. Three unchanged game-thread samples establish only a stable observed world/actor path/class/address inventory. Component availability and reset-hook begin/return are separate indicators; pending callback completion remains unknown. Fighter enumeration checks up to 256 entries, prioritizes up to 64 active candidates, and separately samples inactive and pooled actors with explicit truncation. It also inventories `AAISituationActor` and `AAISpawner` instances.
 - Scalar metadata was resolved from the locally installed Steam UE4.26.2 executable/PDB UHT property tables. The first sample fields are `UAttackComponent.m_fDangerTimeOut` and `m_eDangerState`, `UAIFightingComponent.m_iCurrentPhaseNodeIndex` / `m_iLastPhaseNodeIndex`, `UCharacterMovementComponent.MaxWalkSpeed`, `USCAnimInstance.m_fCinematicOverallWeight`, `AAISituationActor.m_iCurrentLastManOccuranceCount`, and spawner respawn/spawn delay and kill-counter configuration. Config values are not assumed to represent live encounter progress. Arrays, maps, bool bitfields, and UObject references are not read by the generic scalar probes.
 - Actor comparison pairs by class path plus object path and separately reports pointer changes. It can show observable transform/vitals/selected-state differences and instance-address changes. It does not have a verified FUObjectArray serial identity, does not prove that same-address actors have the same lifecycle, and does not establish equality of hidden AI, timer, RNG, or physics state.
 - Reset/reapply remains disabled. The trace must first reveal the actual Reset Situation call chain and a stable post-reset boundary; runtime observations must then confirm which situation/spawner/AI fields represent encounter progression. Current inventory is diagnostic and does not issue resets or mutate state.

@@ -188,43 +188,80 @@ void DrawSavestatesTab() {
     if (!ImGui::CollapsingHeader("Advanced / diagnostics")) return;
     const auto diagnostics = tas::reset_diagnostics::GetStatus();
     const bool trace_busy = diagnostics.trace_state == tas::reset_diagnostics::TraceState::Queued ||
+                            diagnostics.trace_state == tas::reset_diagnostics::TraceState::Armed ||
+                            diagnostics.trace_state == tas::reset_diagnostics::TraceState::TriggerPending ||
+                            diagnostics.trace_state == tas::reset_diagnostics::TraceState::Triggering ||
                             diagnostics.trace_state == tas::reset_diagnostics::TraceState::Capturing ||
                             diagnostics.writer_active;
     ImGui::BeginDisabled(trace_busy);
-    if (ImGui::Button("Capture ProcessEvent trace (5 s)"))
-        tas::reset_diagnostics::QueueProcessEventCapture();
+    if (ImGui::Button("Arm reset trace"))
+        tas::reset_diagnostics::QueueArmResetTrace();
     ImGui::EndDisabled();
     switch (diagnostics.trace_state) {
         case tas::reset_diagnostics::TraceState::Ready:
-            ImGui::TextDisabled("ProcessEvent trace is opt-in and captures at most 2048 calls.");
+            ImGui::TextDisabled("Trace is idle. Capture a baseline, then arm before Reset Situation.");
             break;
         case tas::reset_diagnostics::TraceState::Queued:
-            ImGui::Text("ProcessEvent trace queued for the next game-thread tick.");
+            ImGui::Text("Stage 2/3: arming on the next game-thread tick.");
+            break;
+        case tas::reset_diagnostics::TraceState::Armed:
+            ImGui::Text("Stage 2/3: armed; close the GUI and activate Reset Situation. Recent calls: %u / 512.",
+                        diagnostics.trace_pre_events);
+            break;
+        case tas::reset_diagnostics::TraceState::TriggerPending:
+        case tas::reset_diagnostics::TraceState::Triggering:
+            ImGui::Text("Reset trigger observed; collecting the event window.");
             break;
         case tas::reset_diagnostics::TraceState::Capturing:
-            ImGui::Text("Capturing ProcessEvent calls: %u / 2048", diagnostics.trace_events);
+            ImGui::Text("Capturing post-trigger events: %u / 1536", diagnostics.trace_events);
             break;
         case tas::reset_diagnostics::TraceState::Complete:
-            ImGui::Text("Trace complete: %u events, %u overflowed%s", diagnostics.trace_events,
-                        diagnostics.trace_dropped,
+            ImGui::Text("Trace complete: %u detail events; %u aggregated calls / %u pairs; %u untracked%s",
+                        diagnostics.trace_events, diagnostics.trace_aggregated_events,
+                        diagnostics.trace_aggregate_pairs, diagnostics.trace_dropped,
                         diagnostics.writer_active ? "; writing log" : "");
+            ImGui::Text("Recent pre-trigger events overwritten: %u",
+                        diagnostics.trace_pre_overwritten);
             break;
         case tas::reset_diagnostics::TraceState::Failed:
             ImGui::Text("ProcessEvent trace unavailable; see SifuCoop.log.");
             break;
     }
     ImGui::TextWrapped("%s", diagnostics.last_result);
+    char marker_binding[32] = {};
+    tas::BindingText(tas::GetSettings().bindings[static_cast<int>(tas::Action::ResetTraceTrigger)],
+                     marker_binding, sizeof(marker_binding));
+    ImGui::TextDisabled("Trace marker: %s. It does not consume the key; press immediately before Reset Situation. Native reset hooks are also monitored.",
+                        marker_binding);
     ImGui::Separator();
-    if (ImGui::Button("Capture encounter baseline"))
+    if (ImGui::Button("1. Capture baseline"))
         tas::reset_diagnostics::QueueBaselineCapture();
     ImGui::SameLine();
     ImGui::BeginDisabled(!diagnostics.baseline_saved || diagnostics.comparison_waiting);
-    if (ImGui::Button("Compare current state"))
+    if (ImGui::Button("4. Compare current state"))
         tas::reset_diagnostics::QueueStateComparison();
     ImGui::EndDisabled();
-    ImGui::TextDisabled("Capture before Reset Situation, trigger reset manually, then compare. Read-only; see reset-diff records in SifuCoop.log.");
-    ImGui::Text("World actors: %u; active candidates: %u; captured: %u; capacity: 32",
-                status.world_actor_count, status.enumerated_count, status.captured_count);
+    ImGui::TextWrapped("Workflow: capture baseline → arm reset trace → close GUI → press the configured marker → activate Reset Situation → reopen GUI → compare.");
+    ImGui::Text("Reset hook: begin %s, return %s; comparison: %s",
+                diagnostics.reset_observed_since_baseline ? "observed" : "not observed",
+                diagnostics.reset_returned_since_baseline ? "observed" : "not observed",
+                diagnostics.comparison_waiting ? "sampling" :
+                    (diagnostics.actor_registry_stable ? "stable observed inventory" : "not yet compared"));
+    ImGui::Text("Components: %u available, %u missing; %s",
+                diagnostics.components_available_count, diagnostics.components_missing,
+                diagnostics.components_ready ? "required fighter components available" :
+                                                "component readiness incomplete/unknown");
+    ImGui::Text("Fighter enumeration %s: %u / %u (omitted %u); active %u, inactive %u, pooled %u; sample caps omitted %u",
+                diagnostics.fighter_enumeration_available ? "available" : "unavailable",
+                diagnostics.fighter_enumeration_captured,
+                diagnostics.fighter_enumeration_total,
+                diagnostics.fighter_enumeration_omitted, diagnostics.active_fighters,
+                diagnostics.inactive_fighters, diagnostics.pooled_fighters,
+                diagnostics.sampled_actors_omitted);
+    ImGui::TextDisabled("Three unchanged registry samples indicate only a stable observed inventory; they do not prove reset completion or that pending callbacks have finished. Details and reset boundary RVAs are in SifuCoop.log.");
+    ImGui::Separator();
+    ImGui::Text("Snapshot candidates: world actors %u; active candidates %u; captured %u; capacity %u",
+                status.world_actor_count, status.enumerated_count, status.captured_count, 32);
     ImGui::Text("Excluded: pooled %u, invalid %u, missing health %u, inactive %u, identity too long %u / unavailable %u, capacity %u",
                 status.pooled_count, status.invalid_count, status.missing_health_count,
                 status.inactive_count, status.identity_truncated_count,

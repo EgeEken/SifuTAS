@@ -754,6 +754,9 @@ void ActivateAction(tas::Action action) {
         case tas::Action::ToggleNativeRecording:
             sifucoop::game::QueueReplayRecordingToggle();
             break;
+        case tas::Action::ResetTraceTrigger:
+            tas::reset_diagnostics::TriggerFallbackHotkey();
+            break;
         case tas::Action::Count:
             break;
     }

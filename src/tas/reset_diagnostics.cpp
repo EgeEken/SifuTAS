@@ -22,22 +22,44 @@ namespace game = sifucoop::game;
 namespace ue = sifucoop::ue;
 namespace offsets = sifucoop::offsets;
 
-constexpr std::uint32_t kTraceLimit = 2048;
-constexpr ULONGLONG kTraceDurationMs = 5000;
+constexpr std::uint32_t kPreEventLimit = 512;
+constexpr std::uint32_t kPostEventLimit = 1536;
+constexpr std::uint32_t kTraceLimit = kPreEventLimit + kPostEventLimit;
+constexpr std::uint32_t kAggregateLimit = 256;
+constexpr ULONGLONG kTraceDurationMs = 2000;
 constexpr ULONGLONG kStabilityTimeoutMs = 10000;
 constexpr std::uint32_t kStableSamplesRequired = 3;
-constexpr int kActorLimit = 64;
+constexpr int kFighterEnumerationLimit = 256;
+constexpr int kActiveFighterLimit = 64;
+constexpr int kInactiveFighterLimit = 16;
+constexpr int kPooledFighterLimit = 16;
+constexpr int kActorLimit = 129;
 
 using ProcessEventFn = void(__fastcall*)(ue::UObject*, ue::UFunction*, void*);
 using StaticClassFn = ue::UObject*(__fastcall*)();
 
-struct TraceEvent {
+struct RawTraceEvent {
     std::uint64_t order = 0;
     std::uint64_t qpc = 0;
     DWORD thread_id = 0;
     std::uintptr_t object = 0;
     std::uintptr_t klass = 0;
     std::uintptr_t function = 0;
+};
+
+struct TraceEvent {
+    RawTraceEvent raw = {};
+    char class_path[160] = {};
+    char function_path[192] = {};
+};
+
+struct PairAggregate {
+    std::atomic<std::uint64_t> hash{0};
+    std::atomic<std::uintptr_t> function{0};
+    std::atomic<std::uintptr_t> klass{0};
+    std::atomic<std::uint64_t> count{0};
+    std::atomic<std::uint64_t> first_qpc{0};
+    std::atomic<std::uint64_t> last_qpc{0};
     char class_path[160] = {};
     char function_path[192] = {};
 };
@@ -71,8 +93,11 @@ struct ActorSample {
     std::int32_t spawner_death_counter_delta = -1;
     std::uint8_t attack_danger_state = 0xff;
     bool player = false;
+    bool inactive = false;
+    bool pooled = false;
     bool situation = false;
     bool spawner = false;
+    bool required_components_available = false;
     bool has_location = false;
     bool has_velocity = false;
     bool has_custom_dilation = false;
@@ -92,16 +117,49 @@ struct ActorSnapshot {
     std::uintptr_t world = 0;
     ue::FName match_state = {};
     char world_path[512] = {};
+    std::uint32_t reset_begin_total = 0;
+    std::uint32_t reset_return_total = 0;
+    std::uint32_t fighter_total = 0;
+    std::uint32_t fighter_enumerated = 0;
+    std::uint32_t active_fighter_count = 0;
+    std::uint32_t inactive_fighter_count = 0;
+    std::uint32_t pooled_fighter_count = 0;
+    std::uint32_t active_fighter_truncated = 0;
+    std::uint32_t inactive_fighter_truncated = 0;
+    std::uint32_t pooled_fighter_truncated = 0;
+    std::uint32_t invalid_fighters = 0;
+    std::uint32_t missing_health_fighters = 0;
+    std::uint32_t situation_total = 0;
+    std::uint32_t situation_truncated = 0;
+    std::uint32_t spawner_total = 0;
+    std::uint32_t spawner_truncated = 0;
+    bool situation_enumeration_available = false;
+    bool spawner_enumeration_available = false;
+    std::uint32_t required_components_available = 0;
+    std::uint32_t required_components_missing = 0;
+    bool fighter_enumeration_available = false;
     std::uint32_t count = 0;
     ActorSample actors[kActorLimit] = {};
 };
 
+RawTraceEvent g_pre_ring[kPreEventLimit] = {};
+RawTraceEvent g_post_events[kPostEventLimit] = {};
+RawTraceEvent g_candidates[kTraceLimit] = {};
 TraceEvent g_trace[kTraceLimit] = {};
+PairAggregate g_aggregates[kAggregateLimit] = {};
+std::atomic_flag g_aggregate_lock = ATOMIC_FLAG_INIT;
 std::atomic<TraceState> g_trace_state{TraceState::Ready};
-std::atomic<std::uint32_t> g_trace_reserved{0};
-std::atomic<std::uint32_t> g_trace_dropped{0};
+std::atomic<std::uint64_t> g_event_order{0};
+std::atomic<std::uint32_t> g_pre_reserved{0};
+std::atomic<std::uint32_t> g_post_reserved{0};
+std::atomic<std::uint32_t> g_trace_count{0};
+std::atomic<std::uint32_t> g_trace_overflow_events{0};
+std::atomic<std::uint32_t> g_aggregate_untracked{0};
+std::atomic<std::uint32_t> g_trace_pre_overwritten{0};
 std::atomic<std::uint32_t> g_active_writers{0};
-std::atomic<bool> g_capture_requested{false};
+std::atomic<bool> g_arm_requested{false};
+std::atomic<std::uint64_t> g_trigger_order{0};
+std::atomic<std::uint32_t> g_trigger_source{0};
 std::atomic<bool> g_trace_resolving{false};
 std::atomic<std::uint64_t> g_trace_start_qpc{0};
 std::atomic<ULONGLONG> g_trace_start_ms{0};
@@ -121,6 +179,12 @@ ULONGLONG g_comparison_start_ms = 0;
 std::uint32_t g_stable_samples = 0;
 std::atomic<bool> g_baseline_requested{false};
 std::atomic<bool> g_compare_requested{false};
+std::atomic<std::uint32_t> g_reset_begin_total{0};
+std::atomic<std::uint32_t> g_reset_return_total{0};
+std::atomic<std::uint32_t> g_reset_last_kind{0};
+std::atomic<std::uintptr_t> g_reset_last_caller{0};
+bool g_reset_observed_since_baseline = false;
+bool g_reset_returned_since_baseline = false;
 thread_local bool g_in_capture_hook = false;
 
 template <typename T>
@@ -172,33 +236,117 @@ void PollWriter() {
     ReleaseSRWLockExclusive(&g_writer_lock);
 }
 
+void AggregateOverflow(const RawTraceEvent& event) {
+    while (g_aggregate_lock.test_and_set(std::memory_order_acquire)) YieldProcessor();
+    const std::uint64_t fn = event.function;
+    const std::uint64_t klass = event.klass;
+    std::uint64_t hash = (fn * 0x9E3779B185EBCA87ull) ^
+                         ((klass << 17) | (klass >> 47));
+    if (!hash || hash == 1) hash += 2;
+    const std::uint32_t start = static_cast<std::uint32_t>(hash) % kAggregateLimit;
+    for (std::uint32_t probe = 0; probe < kAggregateLimit; ++probe) {
+        PairAggregate& entry = g_aggregates[(start + probe) % kAggregateLimit];
+        std::uint64_t slot_hash = entry.hash.load(std::memory_order_acquire);
+        if (!slot_hash) {
+            std::uint64_t empty = 0;
+            if (entry.hash.compare_exchange_strong(empty, 1, std::memory_order_acq_rel)) {
+                entry.function.store(event.function, std::memory_order_relaxed);
+                entry.klass.store(event.klass, std::memory_order_relaxed);
+                entry.count.store(1, std::memory_order_relaxed);
+                entry.first_qpc.store(event.qpc, std::memory_order_relaxed);
+                entry.last_qpc.store(event.qpc, std::memory_order_relaxed);
+                entry.hash.store(hash, std::memory_order_release);
+                g_aggregate_lock.clear(std::memory_order_release);
+                return;
+            }
+            slot_hash = entry.hash.load(std::memory_order_acquire);
+        }
+        if (slot_hash == hash &&
+            entry.function.load(std::memory_order_relaxed) == event.function &&
+            entry.klass.load(std::memory_order_relaxed) == event.klass) {
+            entry.count.fetch_add(1, std::memory_order_relaxed);
+            const std::uint64_t first = entry.first_qpc.load(std::memory_order_relaxed);
+            const std::uint64_t last = entry.last_qpc.load(std::memory_order_relaxed);
+            if (event.qpc < first) entry.first_qpc.store(event.qpc, std::memory_order_relaxed);
+            if (event.qpc > last) entry.last_qpc.store(event.qpc, std::memory_order_relaxed);
+            g_aggregate_lock.clear(std::memory_order_release);
+            return;
+        }
+    }
+    g_aggregate_untracked.fetch_add(1, std::memory_order_relaxed);
+    g_aggregate_lock.clear(std::memory_order_release);
+}
+
+std::uint64_t QpcNow() {
+    LARGE_INTEGER now = {};
+    QueryPerformanceCounter(&now);
+    return static_cast<std::uint64_t>(now.QuadPart);
+}
+
+bool TraceWindowExpired(std::uint64_t now) {
+    const std::uint64_t start = g_trace_start_qpc.load(std::memory_order_relaxed);
+    const std::uint64_t frequency = g_qpc_frequency.load(std::memory_order_relaxed);
+    return frequency && now >= start &&
+           now - start >= frequency * kTraceDurationMs / 1000;
+}
+
+void TriggerTrace(std::uint32_t source) {
+    TraceState expected = TraceState::Armed;
+    if (!g_trace_state.compare_exchange_strong(expected, TraceState::TriggerPending,
+                                                std::memory_order_acq_rel)) return;
+    const std::uint64_t marker = g_event_order.fetch_add(1, std::memory_order_relaxed) + 1;
+    g_trigger_order.store(marker, std::memory_order_release);
+    g_trigger_source.store(source, std::memory_order_relaxed);
+    g_trace_start_qpc.store(QpcNow(), std::memory_order_relaxed);
+    g_trace_start_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    g_trace_state.store(TraceState::Triggering, std::memory_order_release);
+    SetResult(source == 1 ? "Native reset boundary triggered capture." :
+                           "Fallback hotkey triggered capture; activate Reset Situation now.");
+}
+
 void __fastcall ProcessEventHook(ue::UObject* self, ue::UFunction* function,
                                 void* params) {
+    const TraceState initial = g_trace_state.load(std::memory_order_relaxed);
     if (!g_in_capture_hook &&
-        g_trace_state.load(std::memory_order_acquire) == TraceState::Capturing) {
+        (initial == TraceState::Armed || initial == TraceState::TriggerPending ||
+         initial == TraceState::Triggering || initial == TraceState::Capturing)) {
         g_in_capture_hook = true;
         g_active_writers.fetch_add(1, std::memory_order_acq_rel);
-        if (g_trace_state.load(std::memory_order_acquire) == TraceState::Capturing) {
-            const std::uint32_t index = g_trace_reserved.fetch_add(1, std::memory_order_relaxed);
-            if (index < kTraceLimit) {
-                TraceEvent& event = g_trace[index];
-                event.order = static_cast<std::uint64_t>(index) + 1;
-                LARGE_INTEGER now = {};
-                QueryPerformanceCounter(&now);
-                event.qpc = static_cast<std::uint64_t>(now.QuadPart);
-                event.thread_id = GetCurrentThreadId();
-                event.object = reinterpret_cast<std::uintptr_t>(self);
-                event.function = reinterpret_cast<std::uintptr_t>(function);
-                event.klass = 0;
-                if (self)
-                    std::memcpy(&event.klass,
-                                reinterpret_cast<const std::uint8_t*>(self) + 0x10,
-                                sizeof(event.klass));
-            } else {
-                g_trace_dropped.fetch_add(1, std::memory_order_relaxed);
-                TraceState expected = TraceState::Capturing;
-                g_trace_state.compare_exchange_strong(expected, TraceState::Complete,
-                                                       std::memory_order_acq_rel);
+        TraceState state = g_trace_state.load(std::memory_order_acquire);
+        if (state == TraceState::Armed || state == TraceState::TriggerPending ||
+            state == TraceState::Triggering || state == TraceState::Capturing) {
+            RawTraceEvent event = {};
+            event.order = g_event_order.fetch_add(1, std::memory_order_relaxed) + 1;
+            event.qpc = QpcNow();
+            event.thread_id = GetCurrentThreadId();
+            event.object = reinterpret_cast<std::uintptr_t>(self);
+            event.function = reinterpret_cast<std::uintptr_t>(function);
+            if (self && ue::RangeReadable(
+                            reinterpret_cast<const std::uint8_t*>(self) + 0x10,
+                            sizeof(event.klass)))
+                std::memcpy(&event.klass,
+                            reinterpret_cast<const std::uint8_t*>(self) + 0x10,
+                            sizeof(event.klass));
+
+            if ((state == TraceState::Triggering || state == TraceState::Capturing) &&
+                TraceWindowExpired(event.qpc)) {
+                g_trace_state.compare_exchange_strong(state, TraceState::Complete,
+                                                      std::memory_order_acq_rel);
+                state = g_trace_state.load(std::memory_order_acquire);
+            }
+            if (state == TraceState::Armed || state == TraceState::TriggerPending) {
+                const std::uint32_t index = static_cast<std::uint32_t>(event.order) %
+                                            kPreEventLimit;
+                g_pre_ring[index] = event;
+                g_pre_reserved.fetch_add(1, std::memory_order_relaxed);
+            } else if (state == TraceState::Triggering || state == TraceState::Capturing) {
+                const std::uint32_t index = g_post_reserved.fetch_add(
+                    1, std::memory_order_relaxed);
+                if (index < kPostEventLimit) {
+                    g_post_events[index] = event;
+                } else {
+                    AggregateOverflow(event);
+                }
             }
         }
         g_active_writers.fetch_sub(1, std::memory_order_release);
@@ -247,12 +395,14 @@ ue::UObject* ComponentByClass(ue::UObject* actor, ue::UObject* component_class) 
 }
 
 void SampleActor(ActorSample* sample, ue::UObject* actor, bool player,
-                 bool situation, bool spawner) {
+                 bool situation, bool spawner, bool inactive, bool pooled) {
     if (!sample || !ue::IsAliveObject(actor)) return;
     sample->object = reinterpret_cast<std::uintptr_t>(actor);
     sample->player = player;
     sample->situation = situation;
     sample->spawner = spawner;
+    sample->inactive = inactive;
+    sample->pooled = pooled;
     if (!ue::GetObjectPathName(actor, sample->identity, sizeof(sample->identity)))
         lstrcpynA(sample->identity, "unavailable", sizeof(sample->identity));
     if (!ue::GetObjectClassPathName(actor, sample->class_path, sizeof(sample->class_path)))
@@ -284,7 +434,7 @@ void SampleActor(ActorSample* sample, ue::UObject* actor, bool player,
                       &sample->attack_danger_state);
     }
 
-    if (actor && !situation && !spawner) {
+    if (actor && !situation && !spawner && !pooled) {
         sample->ai = reinterpret_cast<std::uintptr_t>(ComponentByClass(
             actor, StaticClass(offsets::UAIFightingComponent_StaticClass)));
         sample->movement = reinterpret_cast<std::uintptr_t>(ComponentByClass(
@@ -329,11 +479,20 @@ void SampleActor(ActorSample* sample, ue::UObject* actor, bool player,
 }
 
 bool AddActor(ActorSnapshot* snapshot, ue::UObject* actor, bool player,
-              bool situation, bool spawner) {
+              bool situation, bool spawner, bool inactive = false,
+              bool pooled = false) {
     if (!actor || snapshot->count >= kActorLimit) return false;
     ActorSample& sample = snapshot->actors[snapshot->count];
-    SampleActor(&sample, actor, player, situation, spawner);
+    SampleActor(&sample, actor, player, situation, spawner, inactive, pooled);
     if (!sample.object) return false;
+    if (!situation && !spawner && !pooled) {
+        sample.required_components_available = sample.attack && sample.defense &&
+                                                sample.health_component;
+        if (sample.required_components_available)
+            ++snapshot->required_components_available;
+        else
+            ++snapshot->required_components_missing;
+    }
     ++snapshot->count;
     return true;
 }
@@ -346,28 +505,101 @@ ActorSnapshot CaptureActors() {
     if (!ue::GetObjectPathName(world, snapshot.world_path, sizeof(snapshot.world_path)))
         lstrcpynA(snapshot.world_path, "unavailable", sizeof(snapshot.world_path));
     snapshot.match_state_available = ue::GetWorldMatchState(world, &snapshot.match_state);
+    snapshot.reset_begin_total = g_reset_begin_total.load(std::memory_order_relaxed);
+    snapshot.reset_return_total = g_reset_return_total.load(std::memory_order_relaxed);
 
     ue::UObject* player = ue::GetPlayerCharacter(world, 0);
     AddActor(&snapshot, player, true, false, false);
 
-    ue::UObject* fighters[32] = {};
+    ue::UObject* fighters[kFighterEnumerationLimit] = {};
     int fighter_count = 0;
     int fighter_total = 0;
-    if (game::EnumerateWorldFighters(fighters, 32, &fighter_count, &fighter_total)) {
-        for (int i = 0; i < fighter_count; ++i)
-            if (fighters[i] != player) AddActor(&snapshot, fighters[i], false, false, false);
+    snapshot.fighter_enumeration_available = game::EnumerateWorldFighters(
+        fighters, kFighterEnumerationLimit, &fighter_count, &fighter_total);
+    if (snapshot.fighter_enumeration_available) {
+        snapshot.fighter_total = static_cast<std::uint32_t>((std::max)(fighter_total, 0));
+        snapshot.fighter_enumerated = static_cast<std::uint32_t>((std::max)(fighter_count, 0));
+        ue::UObject* active[kActiveFighterLimit] = {};
+        ue::UObject* inactive[kFighterEnumerationLimit] = {};
+        ue::UObject* pooled[kFighterEnumerationLimit] = {};
+        std::uint32_t active_count = 0;
+        std::uint32_t active_total = 0;
+        std::uint32_t inactive_count = 0;
+        std::uint32_t pooled_count = 0;
+        for (int i = 0; i < fighter_count; ++i) {
+            ue::UObject* actor = fighters[i];
+            if (!actor || actor == player) continue;
+            if (!ue::IsAliveObject(actor)) {
+                ++snapshot.invalid_fighters;
+                continue;
+            }
+            ue::FVector location = {};
+            if (!ue::GetActorLocation(actor, &location)) {
+                ++snapshot.invalid_fighters;
+                continue;
+            }
+            if (game::IsPooled(location)) {
+                if (pooled_count < kFighterEnumerationLimit)
+                    pooled[pooled_count++] = actor;
+                continue;
+            }
+            const game::Fighter fighter = game::ResolveFighter(actor);
+            if (!fighter.health || !ue::IsAliveObject(fighter.health)) {
+                ++snapshot.missing_health_fighters;
+                if (inactive_count < kFighterEnumerationLimit)
+                    inactive[inactive_count++] = actor;
+                continue;
+            }
+            const float health = game::GetHealth(fighter);
+            if (!std::isfinite(health) || health <= 0.5f) {
+                if (inactive_count < kFighterEnumerationLimit)
+                    inactive[inactive_count++] = actor;
+                continue;
+            }
+            ++active_total;
+            if (active_count < kActiveFighterLimit) active[active_count++] = actor;
+        }
+        snapshot.active_fighter_count = active_count;
+        snapshot.inactive_fighter_count = inactive_count;
+        snapshot.pooled_fighter_count = pooled_count;
+        snapshot.active_fighter_truncated = active_total - active_count;
+        snapshot.inactive_fighter_truncated = inactive_count > kInactiveFighterLimit
+                                                  ? inactive_count - kInactiveFighterLimit
+                                                  : 0;
+        snapshot.pooled_fighter_truncated = pooled_count > kPooledFighterLimit
+                                                ? pooled_count - kPooledFighterLimit
+                                                : 0;
+        for (std::uint32_t i = 0; i < active_count; ++i)
+            AddActor(&snapshot, active[i], false, false, false);
+        const std::uint32_t inactive_sampled =
+            (std::min)(inactive_count, static_cast<std::uint32_t>(kInactiveFighterLimit));
+        for (std::uint32_t i = 0; i < inactive_sampled; ++i)
+            AddActor(&snapshot, inactive[i], false, false, false, true, false);
+        const std::uint32_t pooled_sampled =
+            (std::min)(pooled_count, static_cast<std::uint32_t>(kPooledFighterLimit));
+        for (std::uint32_t i = 0; i < pooled_sampled; ++i)
+            AddActor(&snapshot, pooled[i], false, false, false, false, true);
     }
 
     ue::UObject* situations[16] = {};
     int count = 0;
     int total = 0;
-    if (game::EnumerateActorsOfClass(StaticClass(offsets::AAISituationActor_StaticClass),
-                                     situations, 16, &count, &total)) {
+    snapshot.situation_enumeration_available = game::EnumerateActorsOfClass(
+        StaticClass(offsets::AAISituationActor_StaticClass), situations, 16,
+        &count, &total);
+    if (snapshot.situation_enumeration_available) {
+        snapshot.situation_total = static_cast<std::uint32_t>((std::max)(total, 0));
+        snapshot.situation_truncated = static_cast<std::uint32_t>(
+            (std::max)(total - count, 0));
         for (int i = 0; i < count; ++i) AddActor(&snapshot, situations[i], false, true, false);
     }
     ue::UObject* spawners[16] = {};
-    if (game::EnumerateActorsOfClass(StaticClass(offsets::AAISpawner_StaticClass),
-                                     spawners, 16, &count, &total)) {
+    snapshot.spawner_enumeration_available = game::EnumerateActorsOfClass(
+        StaticClass(offsets::AAISpawner_StaticClass), spawners, 16, &count, &total);
+    if (snapshot.spawner_enumeration_available) {
+        snapshot.spawner_total = static_cast<std::uint32_t>((std::max)(total, 0));
+        snapshot.spawner_truncated = static_cast<std::uint32_t>(
+            (std::max)(total - count, 0));
         for (int i = 0; i < count; ++i) AddActor(&snapshot, spawners[i], false, false, true);
     }
     snapshot.valid = true;
@@ -375,15 +607,17 @@ ActorSnapshot CaptureActors() {
 }
 
 void LogSample(const char* stage, const ActorSample& a) {
-    SC_LOG("tas: reset-diff stage=%s role=%s%s%s name=%s class=%s object=%p "
+    const char* role = a.player ? "player" : a.situation ? "situation" :
+                       a.spawner ? "spawner" : a.pooled ? "pooled" :
+                       a.inactive ? "inactive" : "active";
+    SC_LOG("tas: reset-diff stage=%s role=%s name=%s class=%s object=%p "
            "attack=%p defense=%p health_component=%p ai=%p movement=%p order=%p "
            "loc=%s%.2f,%.2f,%.2f rot=%.2f,%.2f,%.2f vel=%s%.2f,%.2f,%.2f "
            "health=%s%.2f guard=%s%.2f custom_dilation=%s%.3f montage=%s "
            "attack_danger=%s%.2f/%u ai_phase=%s%d/%d max_walk=%s%.2f "
            "cinematic_weight=%s%.3f situation_last_man=%s%d "
            "spawner_timing=%s%.2f/%.2f spawner_kill_values=%d/%d",
-           stage, a.player ? "player" : "actor", a.situation ? ":situation" : "",
-           a.spawner ? ":spawner" : "", a.identity, a.class_path,
+           stage, role, a.identity, a.class_path,
            reinterpret_cast<void*>(a.object), reinterpret_cast<void*>(a.attack),
            reinterpret_cast<void*>(a.defense), reinterpret_cast<void*>(a.health_component),
            reinterpret_cast<void*>(a.ai), reinterpret_cast<void*>(a.movement),
@@ -409,18 +643,55 @@ void CaptureBaseline() {
         SetResult("Baseline refused: current world is unavailable.");
         return;
     }
-    SC_LOG("tas: reset-diff baseline world=%s world_object=%p match_state=%s%u:%d actors=%u",
+    g_reset_observed_since_baseline = false;
+    g_reset_returned_since_baseline = false;
+    SC_LOG("tas: reset-diff baseline world=%s world_object=%p match_state=%s%u:%d "
+           "actors=%u fighters_total=%u enumerated=%u active=%u active_truncated=%u "
+           "inactive=%u inactive_truncated=%u pooled=%u pooled_truncated=%u "
+           "components_available=%u components_missing=%u fighter_enumeration_available=%u enumeration_omitted=%u "
+           "invalid=%u missing_health=%u "
+           "situations=%u situations_truncated=%u situation_enumeration_available=%u "
+           "spawners=%u spawners_truncated=%u spawner_enumeration_available=%u",
            g_baseline.world_path, reinterpret_cast<void*>(g_baseline.world),
            g_baseline.match_state_available ? "" : "n/a ",
            static_cast<unsigned>(g_baseline.match_state.comparison_index),
            g_baseline.match_state.number,
-           g_baseline.count);
+           g_baseline.count, g_baseline.fighter_total, g_baseline.fighter_enumerated,
+           g_baseline.active_fighter_count, g_baseline.active_fighter_truncated,
+           g_baseline.inactive_fighter_count, g_baseline.inactive_fighter_truncated,
+           g_baseline.pooled_fighter_count, g_baseline.pooled_fighter_truncated,
+           g_baseline.required_components_available,
+           g_baseline.required_components_missing,
+           g_baseline.fighter_enumeration_available ? 1u : 0u,
+           g_baseline.fighter_total > g_baseline.fighter_enumerated
+               ? g_baseline.fighter_total - g_baseline.fighter_enumerated : 0u,
+           g_baseline.invalid_fighters, g_baseline.missing_health_fighters,
+           g_baseline.situation_total, g_baseline.situation_truncated,
+           g_baseline.situation_enumeration_available ? 1u : 0u,
+           g_baseline.spawner_total, g_baseline.spawner_truncated,
+           g_baseline.spawner_enumeration_available ? 1u : 0u);
     for (std::uint32_t i = 0; i < g_baseline.count; ++i)
         LogSample("before", g_baseline.actors[i]);
     AcquireSRWLockExclusive(&g_status_lock);
     g_status.baseline_saved = true;
+    g_status.reset_begin_observed = false;
+    g_status.reset_return_observed = false;
+    g_status.actor_registry_stable = false;
+    g_status.components_ready = false;
+    g_status.reset_observed_since_baseline = false;
+    g_status.reset_returned_since_baseline = false;
+    g_status.fighter_enumeration_available = false;
+    g_status.active_fighters = 0;
+    g_status.inactive_fighters = 0;
+    g_status.pooled_fighters = 0;
+    g_status.components_available_count = 0;
+    g_status.components_missing = 0;
+    g_status.fighter_enumeration_total = 0;
+    g_status.fighter_enumeration_captured = 0;
+    g_status.fighter_enumeration_omitted = 0;
+    g_status.sampled_actors_omitted = 0;
     ReleaseSRWLockExclusive(&g_status_lock);
-    SetResult("Baseline captured. Reset the situation manually, then compare.");
+    SetResult("Stage 1/3: baseline captured. Arm the reset trace next.");
 }
 
 void CompareActors(const ActorSnapshot& current) {
@@ -428,9 +699,23 @@ void CompareActors(const ActorSnapshot& current) {
         SetResult("Comparison refused: capture a baseline first.");
         return;
     }
+    g_reset_observed_since_baseline = current.reset_begin_total >
+                                      g_baseline.reset_begin_total;
+    g_reset_returned_since_baseline = current.reset_return_total >
+                                      g_baseline.reset_return_total;
+    const std::uint32_t reset_kind = g_reset_last_kind.load(std::memory_order_relaxed);
+    const std::uintptr_t reset_caller = g_reset_last_caller.load(std::memory_order_relaxed);
     SC_LOG("tas: reset-diff compare before_world=%s before_world_object=%p "
            "before_match_state=%s%u:%d after_world=%s after_world_object=%p "
-           "after_match_state=%s%u:%d same_world=%u before=%u after=%u",
+           "after_match_state=%s%u:%d same_world=%u before=%u after=%u "
+           "registry_stable=1 components_available=%u components_missing=%u fighter_enumeration_available=%u "
+           "reset_begin_since_baseline=%u reset_return_since_baseline=%u "
+           "last_reset_kind=%u last_reset_caller_rva=0x%llX "
+           "fighters_total=%u enumerated=%u active=%u active_truncated=%u "
+           "inactive=%u inactive_truncated=%u pooled=%u pooled_truncated=%u "
+           "enumeration_omitted=%u invalid=%u missing_health=%u "
+           "situations=%u situations_truncated=%u situation_enumeration_available=%u "
+           "spawners=%u spawners_truncated=%u spawner_enumeration_available=%u",
            g_baseline.world_path, reinterpret_cast<void*>(g_baseline.world),
            g_baseline.match_state_available ? "" : "n/a ",
            static_cast<unsigned>(g_baseline.match_state.comparison_index),
@@ -439,7 +724,23 @@ void CompareActors(const ActorSnapshot& current) {
            current.match_state_available ? "" : "n/a ",
            static_cast<unsigned>(current.match_state.comparison_index),
            current.match_state.number,
-           current.world == g_baseline.world ? 1u : 0u, g_baseline.count, current.count);
+           current.world == g_baseline.world ? 1u : 0u, g_baseline.count, current.count,
+           current.required_components_available, current.required_components_missing,
+           current.fighter_enumeration_available ? 1u : 0u,
+           g_reset_observed_since_baseline ? 1u : 0u,
+           g_reset_returned_since_baseline ? 1u : 0u, reset_kind,
+           static_cast<unsigned long long>(reset_caller), current.fighter_total,
+           current.fighter_enumerated, current.active_fighter_count,
+           current.active_fighter_truncated, current.inactive_fighter_count,
+           current.inactive_fighter_truncated, current.pooled_fighter_count,
+           current.pooled_fighter_truncated,
+           current.fighter_total > current.fighter_enumerated
+               ? current.fighter_total - current.fighter_enumerated : 0u,
+           current.invalid_fighters, current.missing_health_fighters,
+           current.situation_total, current.situation_truncated,
+           current.situation_enumeration_available ? 1u : 0u,
+           current.spawner_total, current.spawner_truncated,
+           current.spawner_enumeration_available ? 1u : 0u);
     std::uint32_t matched = 0;
     std::uint32_t recreated = 0;
     std::uint32_t removed = 0;
@@ -532,7 +833,7 @@ void CompareActors(const ActorSnapshot& current) {
     }
     SC_LOG("tas: reset-diff summary matched=%u recreated=%u removed=%u added=%u",
            matched, recreated, removed, added);
-    SetResult("Read-only comparison complete; see reset-diff records in SifuCoop.log.");
+    SetResult("Stage 3/3: stable observed inventory captured. Reset completion and pending callbacks remain unverified; see SifuCoop.log.");
 }
 
 bool SameActorRegistry(const ActorSnapshot& a, const ActorSnapshot& b) {
@@ -547,10 +848,7 @@ bool SameActorRegistry(const ActorSnapshot& a, const ActorSnapshot& b) {
                 break;
             }
         }
-        if (!second || first.object != second->object || first.attack != second->attack ||
-            first.defense != second->defense || first.health_component != second->health_component ||
-            first.ai != second->ai || first.movement != second->movement ||
-            first.order != second->order)
+        if (!second || first.object != second->object)
             return false;
     }
     return true;
@@ -563,14 +861,14 @@ void PollComparison() {
         AcquireSRWLockExclusive(&g_status_lock);
         g_status.comparison_waiting = false;
         ReleaseSRWLockExclusive(&g_status_lock);
-        SetResult("Comparison timed out waiting for a stable world and actor/component registry.");
+        SetResult("Comparison timed out waiting for an unchanged observed actor registry.");
         return;
     }
     ActorSnapshot current = CaptureActors();
     if (!current.valid) {
         g_stable_samples = 0;
         g_previous_sample = {};
-        SetResult("Waiting for current world and actors to become valid after manual reset.");
+        SetResult("Stage 3/3: waiting for current world and actors to become valid.");
         return;
     }
     g_stable_samples = SameActorRegistry(g_previous_sample, current)
@@ -580,7 +878,7 @@ void PollComparison() {
     if (g_stable_samples < kStableSamplesRequired) {
         char message[160] = {};
         _snprintf_s(message, sizeof(message), _TRUNCATE,
-                    "Waiting for stable actor/component inventory: %u / %u game-thread samples.",
+                    "Stage 3/3: observed actor registry unchanged for %u / %u samples; component readiness is tracked separately.",
                     g_stable_samples, kStableSamplesRequired);
         SetResult(message);
         return;
@@ -589,24 +887,42 @@ void PollComparison() {
     g_comparison_sample = current;
     AcquireSRWLockExclusive(&g_status_lock);
     g_status.comparison_waiting = false;
+    g_status.actor_registry_stable = true;
+    g_status.components_ready = current.fighter_enumeration_available &&
+                                current.required_components_missing == 0;
+    g_status.fighter_enumeration_available = current.fighter_enumeration_available;
+    g_status.reset_observed_since_baseline = g_reset_observed_since_baseline;
+    g_status.reset_returned_since_baseline = g_reset_returned_since_baseline;
+    g_status.active_fighters = current.active_fighter_count;
+    g_status.inactive_fighters = current.inactive_fighter_count;
+    g_status.pooled_fighters = current.pooled_fighter_count;
+    g_status.components_available_count = current.required_components_available;
+    g_status.components_missing = current.required_components_missing;
+    g_status.fighter_enumeration_total = current.fighter_total;
+    g_status.fighter_enumeration_captured = current.fighter_enumerated;
+    g_status.sampled_actors_omitted = current.active_fighter_truncated +
+        current.inactive_fighter_truncated + current.pooled_fighter_truncated +
+        current.situation_truncated + current.spawner_truncated;
+    g_status.fighter_enumeration_omitted = current.fighter_total > current.fighter_enumerated
+        ? current.fighter_total - current.fighter_enumerated : 0u;
     ReleaseSRWLockExclusive(&g_status_lock);
     CompareActors(g_comparison_sample);
 }
 
 void ResolveTraceNames() {
-    const std::uint32_t count = (std::min)(g_trace_reserved.load(std::memory_order_acquire),
-                                           kTraceLimit);
+    const std::uint32_t count = g_trace_count.load(std::memory_order_acquire);
     for (std::uint32_t i = 0; i < count; ++i) {
         TraceEvent& event = g_trace[i];
         for (std::uint32_t j = 0; j < i; ++j) {
-            if (g_trace[j].function == event.function && event.function_path[0]) {
+            if (g_trace[j].raw.function == event.raw.function &&
+                event.function_path[0]) {
                 lstrcpynA(event.function_path, g_trace[j].function_path,
                           sizeof(event.function_path));
                 break;
             }
         }
         if (!event.function_path[0]) {
-            auto* function = reinterpret_cast<ue::UObject*>(event.function);
+            auto* function = reinterpret_cast<ue::UObject*>(event.raw.function);
             if (ue::IsAliveObject(function))
                 ue::GetObjectPathName(function, event.function_path,
                                       sizeof(event.function_path));
@@ -614,41 +930,149 @@ void ResolveTraceNames() {
                                                    sizeof(event.function_path));
         }
         for (std::uint32_t j = 0; j < i; ++j) {
-            if (g_trace[j].klass == event.klass && event.class_path[0]) {
+            if (g_trace[j].raw.klass == event.raw.klass && event.class_path[0]) {
                 lstrcpynA(event.class_path, g_trace[j].class_path, sizeof(event.class_path));
                 break;
             }
         }
         if (!event.class_path[0]) {
-            auto* klass = reinterpret_cast<ue::UObject*>(event.klass);
+            auto* klass = reinterpret_cast<ue::UObject*>(event.raw.klass);
             if (ue::IsAliveObject(klass))
                 ue::GetObjectPathName(klass, event.class_path, sizeof(event.class_path));
             if (!event.class_path[0]) lstrcpynA(event.class_path, "unavailable",
                                                 sizeof(event.class_path));
         }
     }
+    for (std::uint32_t i = 0; i < kAggregateLimit; ++i) {
+        PairAggregate& entry = g_aggregates[i];
+        const std::uint64_t hash = entry.hash.load(std::memory_order_acquire);
+        if (!hash || hash == 1) continue;
+        bool duplicate = false;
+        for (std::uint32_t j = 0; j < i; ++j) {
+            if (g_aggregates[j].hash.load(std::memory_order_acquire) > 1 &&
+                g_aggregates[j].function.load(std::memory_order_relaxed) ==
+                    entry.function.load(std::memory_order_relaxed) &&
+                g_aggregates[j].klass.load(std::memory_order_relaxed) ==
+                    entry.klass.load(std::memory_order_relaxed)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+        auto* function = reinterpret_cast<ue::UObject*>(
+            entry.function.load(std::memory_order_relaxed));
+        auto* klass = reinterpret_cast<ue::UObject*>(
+            entry.klass.load(std::memory_order_relaxed));
+        if (ue::IsAliveObject(function))
+            ue::GetObjectPathName(function, entry.function_path,
+                                  sizeof(entry.function_path));
+        if (ue::IsAliveObject(klass))
+            ue::GetObjectPathName(klass, entry.class_path, sizeof(entry.class_path));
+        if (!entry.function_path[0])
+            lstrcpynA(entry.function_path, "unavailable", sizeof(entry.function_path));
+        if (!entry.class_path[0])
+            lstrcpynA(entry.class_path, "unavailable", sizeof(entry.class_path));
+    }
+}
+
+std::uint32_t AggregatePairCount();
+
+void PrepareTraceOutput() {
+    std::uint32_t candidate_count = 0;
+    for (const RawTraceEvent& event : g_pre_ring)
+        if (event.order) g_candidates[candidate_count++] = event;
+    const std::uint32_t post_count = (std::min)(
+        g_post_reserved.load(std::memory_order_acquire), kPostEventLimit);
+    for (std::uint32_t i = 0; i < post_count; ++i)
+        if (g_post_events[i].order) g_candidates[candidate_count++] = g_post_events[i];
+    std::sort(g_candidates, g_candidates + candidate_count,
+              [](const RawTraceEvent& a, const RawTraceEvent& b) {
+                  return a.order < b.order;
+              });
+
+    const std::uint64_t marker = g_trigger_order.load(std::memory_order_relaxed);
+    std::uint32_t before_count = 0;
+    for (std::uint32_t i = 0; i < candidate_count; ++i)
+        if (g_candidates[i].order < marker) ++before_count;
+    const std::uint32_t before_skip = before_count > kPreEventLimit
+                                          ? before_count - kPreEventLimit
+                                          : 0;
+    const std::uint32_t pre_total = g_pre_reserved.load(std::memory_order_relaxed);
+    g_trace_pre_overwritten.store(pre_total > kPreEventLimit
+                                      ? pre_total - kPreEventLimit : 0u,
+                                  std::memory_order_relaxed);
+    std::uint32_t written = 0;
+    std::uint32_t before_seen = 0;
+    for (std::uint32_t i = 0; i < candidate_count; ++i) {
+        const RawTraceEvent& event = g_candidates[i];
+        if (event.order >= marker) continue;
+        if (before_seen++ < before_skip) continue;
+        g_trace[written++].raw = event;
+    }
+    std::uint32_t after_written = 0;
+    for (std::uint32_t i = 0; i < candidate_count && after_written < kPostEventLimit; ++i) {
+        const RawTraceEvent& event = g_candidates[i];
+        if (event.order < marker) continue;
+        g_trace[written++].raw = event;
+        ++after_written;
+    }
+    if (candidate_count > written)
+        g_trace_overflow_events.fetch_add(candidate_count - written,
+                                          std::memory_order_relaxed);
+    g_trace_count.store(written, std::memory_order_release);
 }
 
 DWORD WINAPI WriteTrace(LPVOID) {
-    const std::uint32_t count = (std::min)(g_trace_reserved.load(std::memory_order_acquire),
-                                           kTraceLimit);
-    LARGE_INTEGER frequency = {};
-    QueryPerformanceFrequency(&frequency);
+    const std::uint32_t count = g_trace_count.load(std::memory_order_acquire);
     const std::uint64_t start = g_trace_start_qpc.load(std::memory_order_relaxed);
-    SC_LOG("tas: processevent trace complete events=%u dropped=%u duration_ms=%llu "
-           "qpc_frequency=%llu names_resolved_after_capture=1",
-           count, g_trace_dropped.load(std::memory_order_relaxed),
+    const std::uint64_t frequency = g_qpc_frequency.load(std::memory_order_relaxed);
+    const char* source = g_trigger_source.load(std::memory_order_relaxed) == 1
+                             ? "native_reset_hook"
+                             : "fallback_hotkey";
+    const std::uint32_t pre_total = g_pre_reserved.load(std::memory_order_relaxed);
+    const std::uint32_t pre_overwritten =
+        g_trace_pre_overwritten.load(std::memory_order_relaxed);
+    const std::uint32_t post_total = g_post_reserved.load(std::memory_order_relaxed);
+    const std::uint32_t aggregated_events = post_total > kPostEventLimit
+                                                ? post_total - kPostEventLimit
+                                                : 0;
+    SC_LOG("tas: processevent trace complete trigger=%s marker_order=%llu detail=%u "
+           "pre_ring_total=%u pre_overwritten=%u post_detail=%u aggregated_events=%u "
+           "aggregate_pairs=%u overflow_events=%u aggregate_untracked=%u duration_ms=%llu "
+           "reset_begin=%u reset_return=%u",
+           source, static_cast<unsigned long long>(g_trigger_order.load()), count,
+           pre_total, pre_overwritten, (std::min)(post_total, kPostEventLimit),
+           aggregated_events, AggregatePairCount(),
+           g_trace_overflow_events.load(), g_aggregate_untracked.load(),
            static_cast<unsigned long long>(GetTickCount64() -
                g_trace_start_ms.load(std::memory_order_relaxed)),
-           static_cast<unsigned long long>(frequency.QuadPart));
+           g_reset_begin_total.load(), g_reset_return_total.load());
     for (std::uint32_t i = 0; i < count; ++i) {
         const TraceEvent& e = g_trace[i];
-        SC_LOG("tas: processevent order=%llu qpc_delta=%llu tid=%lu owner=%p class=%s "
+        const RawTraceEvent& r = e.raw;
+        const std::uint64_t us = frequency && r.qpc >= start
+                                     ? (r.qpc - start) * 1000000ull / frequency
+                                     : 0;
+        SC_LOG("tas: processevent order=%llu delta_us=%llu tid=%lu owner=%p class=%s "
                "function=%s function_ptr=%p",
-               static_cast<unsigned long long>(e.order),
-               static_cast<unsigned long long>(e.qpc >= start ? e.qpc - start : 0),
-               e.thread_id, reinterpret_cast<void*>(e.object), e.class_path,
-               e.function_path, reinterpret_cast<void*>(e.function));
+               static_cast<unsigned long long>(r.order),
+               static_cast<unsigned long long>(us), r.thread_id,
+               reinterpret_cast<void*>(r.object), e.class_path, e.function_path,
+               reinterpret_cast<void*>(r.function));
+    }
+    for (const PairAggregate& entry : g_aggregates) {
+        if (entry.hash.load(std::memory_order_acquire) <= 1) continue;
+        const std::uint64_t first = entry.first_qpc.load(std::memory_order_relaxed);
+        const std::uint64_t last = entry.last_qpc.load(std::memory_order_relaxed);
+        SC_LOG("tas: processevent aggregate class=%s function=%s function_ptr=%p count=%llu "
+               "first_delta_us=%llu last_delta_us=%llu",
+               entry.class_path, entry.function_path,
+               reinterpret_cast<void*>(entry.function.load(std::memory_order_relaxed)),
+               static_cast<unsigned long long>(entry.count.load(std::memory_order_relaxed)),
+               static_cast<unsigned long long>(frequency && first >= start
+                    ? (first - start) * 1000000ull / frequency : 0),
+               static_cast<unsigned long long>(frequency && last >= start
+                    ? (last - start) * 1000000ull / frequency : 0));
     }
     return 0;
 }
@@ -658,32 +1082,54 @@ void FinishTrace() {
     bool expected = false;
     if (!g_trace_resolving.compare_exchange_strong(expected, true,
                                                     std::memory_order_acq_rel)) return;
+    PrepareTraceOutput();
     ResolveTraceNames();
     WaitForWriter();
     g_writer_thread = CreateThread(nullptr, 0, WriteTrace, nullptr, 0, nullptr);
     AcquireSRWLockExclusive(&g_status_lock);
-    g_status.trace_events = (std::min)(g_trace_reserved.load(std::memory_order_relaxed),
-                                       kTraceLimit);
-    g_status.trace_dropped = g_trace_dropped.load(std::memory_order_relaxed);
+    g_status.trace_events = g_trace_count.load(std::memory_order_relaxed);
+    g_status.trace_dropped = g_trace_overflow_events.load(std::memory_order_relaxed) +
+                             g_aggregate_untracked.load(std::memory_order_relaxed);
     g_status.writer_active = g_writer_thread != nullptr;
     ReleaseSRWLockExclusive(&g_status_lock);
     if (!g_writer_thread) WriteTrace(nullptr);
 }
 
-void StartTrace() {
-    g_trace_reserved.store(0, std::memory_order_relaxed);
-    g_trace_dropped.store(0, std::memory_order_relaxed);
+void ArmTrace() {
+    WaitForWriter();
+    for (RawTraceEvent& event : g_pre_ring) event = {};
+    for (RawTraceEvent& event : g_post_events) event = {};
+    for (RawTraceEvent& event : g_candidates) event = {};
+    for (TraceEvent& event : g_trace) event = {};
+    for (PairAggregate& entry : g_aggregates) {
+        entry.hash.store(0, std::memory_order_relaxed);
+        entry.function.store(0, std::memory_order_relaxed);
+        entry.klass.store(0, std::memory_order_relaxed);
+        entry.count.store(0, std::memory_order_relaxed);
+        entry.first_qpc.store(0, std::memory_order_relaxed);
+        entry.last_qpc.store(0, std::memory_order_relaxed);
+        entry.class_path[0] = 0;
+        entry.function_path[0] = 0;
+    }
+    g_event_order.store(0, std::memory_order_relaxed);
+    g_pre_reserved.store(0, std::memory_order_relaxed);
+    g_post_reserved.store(0, std::memory_order_relaxed);
+    g_trace_count.store(0, std::memory_order_relaxed);
+    g_trace_overflow_events.store(0, std::memory_order_relaxed);
+    g_aggregate_untracked.store(0, std::memory_order_relaxed);
+    g_trace_pre_overwritten.store(0, std::memory_order_relaxed);
+    g_trigger_order.store(0, std::memory_order_relaxed);
+    g_trigger_source.store(0, std::memory_order_relaxed);
     g_trace_resolving.store(false, std::memory_order_relaxed);
-    LARGE_INTEGER frequency = {}, now = {};
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&now);
-    g_qpc_frequency.store(static_cast<std::uint64_t>(frequency.QuadPart),
-                          std::memory_order_relaxed);
-    g_trace_start_qpc.store(static_cast<std::uint64_t>(now.QuadPart),
-                            std::memory_order_relaxed);
-    g_trace_start_ms.store(GetTickCount64(), std::memory_order_relaxed);
-    g_trace_state.store(TraceState::Capturing, std::memory_order_release);
-    SetResult("ProcessEvent trace capturing for up to five seconds.");
+    g_trace_state.store(TraceState::Armed, std::memory_order_release);
+    SetResult("Stage 2/3: armed. Close GUI, press the configured marker, then Reset Situation; native reset hooks are also monitored.");
+}
+
+std::uint32_t AggregatePairCount() {
+    std::uint32_t count = 0;
+    for (const PairAggregate& entry : g_aggregates)
+        if (entry.hash.load(std::memory_order_acquire) > 1) ++count;
+    return count;
 }
 
 void LogReflectedInventory() {
@@ -737,12 +1183,40 @@ void RemoveHooks() {
     WaitForWriter();
 }
 
-void QueueProcessEventCapture() {
-    WaitForWriter();
-    TraceState expected = g_trace_state.load(std::memory_order_acquire);
-    if (expected == TraceState::Capturing || expected == TraceState::Queued) return;
+void QueueArmResetTrace() {
+    TraceState state = g_trace_state.load(std::memory_order_acquire);
+    if (state == TraceState::Armed || state == TraceState::TriggerPending ||
+        state == TraceState::Triggering || state == TraceState::Capturing ||
+        state == TraceState::Queued)
+        return;
+    AcquireSRWLockShared(&g_status_lock);
+    const bool writer_active = g_status.writer_active;
+    ReleaseSRWLockShared(&g_status_lock);
+    if (writer_active) return;
     g_trace_state.store(TraceState::Queued, std::memory_order_release);
-    g_capture_requested.store(true, std::memory_order_release);
+    g_arm_requested.store(true, std::memory_order_release);
+    SetResult("Arming reset trace on the next game-thread tick.");
+}
+
+void TriggerFallbackHotkey() { TriggerTrace(2); }
+
+void NotifyResetBoundary(ResetBoundary boundary, bool begin,
+                         std::uintptr_t caller_rva) {
+    const std::uint32_t kind = static_cast<std::uint32_t>(boundary) + 1;
+    g_reset_last_kind.store(kind, std::memory_order_relaxed);
+    g_reset_last_caller.store(caller_rva, std::memory_order_relaxed);
+    if (begin) {
+        g_reset_begin_total.fetch_add(1, std::memory_order_relaxed);
+        AcquireSRWLockExclusive(&g_status_lock);
+        g_status.reset_begin_observed = true;
+        ReleaseSRWLockExclusive(&g_status_lock);
+        TriggerTrace(1);
+    } else {
+        g_reset_return_total.fetch_add(1, std::memory_order_relaxed);
+        AcquireSRWLockExclusive(&g_status_lock);
+        g_status.reset_return_observed = true;
+        ReleaseSRWLockExclusive(&g_status_lock);
+    }
 }
 
 void QueueBaselineCapture() { g_baseline_requested.store(true, std::memory_order_release); }
@@ -751,13 +1225,44 @@ void QueueStateComparison() { g_compare_requested.store(true, std::memory_order_
 Status GetStatus() {
     Status status = {};
     status.trace_state = g_trace_state.load(std::memory_order_acquire);
-    status.trace_events = (std::min)(g_trace_reserved.load(std::memory_order_relaxed),
-                                     kTraceLimit);
-    status.trace_dropped = g_trace_dropped.load(std::memory_order_relaxed);
+    status.trace_events = g_trace_count.load(std::memory_order_relaxed);
+    if (status.trace_state == TraceState::Armed ||
+        status.trace_state == TraceState::TriggerPending ||
+        status.trace_state == TraceState::Triggering ||
+        status.trace_state == TraceState::Capturing) {
+        status.trace_events = (std::min)(g_post_reserved.load(std::memory_order_relaxed),
+                                         kPostEventLimit);
+        status.trace_pre_events = (std::min)(
+            g_pre_reserved.load(std::memory_order_relaxed), kPreEventLimit);
+    }
+    status.trace_pre_overwritten = g_trace_pre_overwritten.load(std::memory_order_relaxed);
+    const std::uint32_t post_total = g_post_reserved.load(std::memory_order_relaxed);
+    status.trace_aggregated_events = post_total > kPostEventLimit
+                                         ? post_total - kPostEventLimit
+                                         : 0;
+    status.trace_aggregate_pairs = AggregatePairCount();
+    status.trace_dropped = g_trace_overflow_events.load(std::memory_order_relaxed) +
+                           g_aggregate_untracked.load(std::memory_order_relaxed);
     AcquireSRWLockShared(&g_status_lock);
     status.writer_active = g_status.writer_active;
     status.baseline_saved = g_status.baseline_saved;
     status.comparison_waiting = g_status.comparison_waiting;
+    status.reset_begin_observed = g_status.reset_begin_observed;
+    status.reset_return_observed = g_status.reset_return_observed;
+    status.actor_registry_stable = g_status.actor_registry_stable;
+    status.components_ready = g_status.components_ready;
+    status.reset_observed_since_baseline = g_status.reset_observed_since_baseline;
+    status.reset_returned_since_baseline = g_status.reset_returned_since_baseline;
+    status.fighter_enumeration_available = g_status.fighter_enumeration_available;
+    status.active_fighters = g_status.active_fighters;
+    status.inactive_fighters = g_status.inactive_fighters;
+    status.pooled_fighters = g_status.pooled_fighters;
+    status.components_available_count = g_status.components_available_count;
+    status.components_missing = g_status.components_missing;
+    status.fighter_enumeration_total = g_status.fighter_enumeration_total;
+    status.fighter_enumeration_captured = g_status.fighter_enumeration_captured;
+    status.fighter_enumeration_omitted = g_status.fighter_enumeration_omitted;
+    status.sampled_actors_omitted = g_status.sampled_actors_omitted;
     lstrcpynA(status.last_result, g_status.last_result, sizeof(status.last_result));
     ReleaseSRWLockShared(&g_status_lock);
     return status;
@@ -765,6 +1270,14 @@ Status GetStatus() {
 
 void Tick() {
     PollWriter();
+    if (g_arm_requested.exchange(false, std::memory_order_acq_rel)) {
+        if (!g_process_event) {
+            g_trace_state.store(TraceState::Failed, std::memory_order_release);
+            SetResult("ProcessEvent hook unavailable; reset trace was not armed.");
+        } else {
+            ArmTrace();
+        }
+    }
     if (g_baseline_requested.exchange(false, std::memory_order_acq_rel)) CaptureBaseline();
     if (g_compare_requested.exchange(false, std::memory_order_acq_rel)) {
         if (!g_baseline.valid) {
@@ -776,26 +1289,26 @@ void Tick() {
             g_previous_sample = {};
             AcquireSRWLockExclusive(&g_status_lock);
             g_status.comparison_waiting = true;
+            g_status.actor_registry_stable = false;
+            g_status.components_ready = false;
             ReleaseSRWLockExclusive(&g_status_lock);
-            SetResult("Sampling a stable post-reset world/actor/component inventory.");
+            SetResult("Stage 3/3: waiting for an unchanged observed actor registry; component readiness and reset-hook observations are reported separately.");
         }
     }
     PollComparison();
-    if (g_capture_requested.exchange(false, std::memory_order_acq_rel)) {
-        if (!g_process_event) {
-            g_trace_state.store(TraceState::Failed, std::memory_order_release);
-            SetResult("ProcessEvent hook unavailable.");
-        } else {
-            StartTrace();
-        }
+    TraceState trace_state = g_trace_state.load(std::memory_order_acquire);
+    if (trace_state == TraceState::Triggering &&
+        g_active_writers.load(std::memory_order_acquire) == 0) {
+        g_trace_state.store(TraceState::Capturing, std::memory_order_release);
+        SetResult("Reset trigger observed; capturing the bounded post-trigger interval.");
+        trace_state = TraceState::Capturing;
     }
-    if (g_trace_state.load(std::memory_order_acquire) == TraceState::Capturing &&
-        (GetTickCount64() - g_trace_start_ms.load(std::memory_order_relaxed) >=
-             kTraceDurationMs ||
-         g_trace_reserved.load(std::memory_order_relaxed) >= kTraceLimit)) {
+    if (trace_state == TraceState::Capturing &&
+        GetTickCount64() - g_trace_start_ms.load(std::memory_order_relaxed) >=
+            kTraceDurationMs) {
         g_trace_state.store(TraceState::Complete, std::memory_order_release);
         FinishTrace();
-    } else if (g_trace_state.load(std::memory_order_acquire) == TraceState::Complete &&
+    } else if (trace_state == TraceState::Complete &&
                !g_trace_resolving.load(std::memory_order_acquire)) {
         FinishTrace();
     }
