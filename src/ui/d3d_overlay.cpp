@@ -337,7 +337,7 @@ void DrawMenu() {
     ImGui::SetNextWindowSize(ImVec2(width, height),
                              g_scale_changed ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
     g_scale_changed = false;
-    ImGui::SetNextWindowBgAlpha(0.96f);
+    ImGui::SetNextWindowBgAlpha(0.88f);
     if (!ImGui::Begin("SifuTAS", nullptr, ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
