@@ -1,6 +1,6 @@
-# Toward coherent SifuTAS savestates
+# SifuTAS savestate feasibility
 
-Status: F8 now has an experimental same-world spawner-keyed enemy rebind fallback after manual reset. It is not yet runtime tested. No combat-order cleanup, reset completion boundary, or full gameplay savestate has been demonstrated. Sifu must be launched and controlled only by the user.
+Status: arbitrary-frame process rollback was not demonstrated by the independent Windows PSS experiment. The current architecture does not have a safe path to restore all process threads and external graphics/system state. Stop expanding the actor snapshot; it is a legacy diagnostic feature, not a gameplay savestate. See [the process rollback feasibility report](PROCESS_ROLLBACK_FEASIBILITY.md). Sifu must be launched and controlled only by the user.
 
 ## Why current snapshots are incomplete
 
@@ -23,6 +23,8 @@ The PDB gives `UOrderComponent::BPF_CancelAllOrders()` the native signature `voi
 - **Sifu's existing disk-backup quicksave mod** only backs up ordinary save files and requires leaving/restarting the game. It cannot provide live combat rollback. <https://www.nexusmods.com/sifu/mods/10>
 
 ## Proposed architecture: reset, stabilize, restore, validate
+
+This section records the earlier reset-based investigation and is historical only. The process rollback feasibility result supersedes it as a development plan. Do not continue this route or add actor fields unless the project scope is explicitly reconsidered after a new architecture passes independent rollback tests.
 
 ### 1. Find the real reset entry point
 

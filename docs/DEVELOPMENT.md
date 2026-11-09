@@ -2,7 +2,7 @@
 
 ## Objective
 
-Create tool-assisted **Sifu combat choreography videos** with input precision beyond human play. Reproducibility is desirable for editing, but no competitive run validation is required. Savestates are the primary development objective, starting with restoration after Sifu's own Free Training reset. Input recording and native replay are secondary unless they directly contribute to restoration.
+Create tool-assisted **Sifu combat choreography videos** with input precision beyond human play. Reproducibility is desirable for editing, but no competitive run validation is required. A standalone process-level experiment did not demonstrate rollback and found an unmanaged runtime thread; arbitrary-frame savestates are not a current development objective. Preserve the working time-control mod. Input recording and native replay remain secondary and must not be presented as savestates.
 
 ## Existing infrastructure
 
@@ -13,13 +13,12 @@ Create tool-assisted **Sifu combat choreography videos** with input precision be
 - `tools/pdbdump/pdbdump.py`: resolves function RVAs and field offsets from a matching Sifu PDB; regenerates `src/core/offsets.g.h` and local build fingerprints.
 - `src/ui/d3d_overlay.cpp`: retained SifuCoop ImGui/Direct3D 11 integration hosting the dedicated TAS interface; the inherited multiplayer menu remains disabled.
 
-## Immediate milestones
+## Current direction
 
-1. **Identify Free Training Reset Situation**: observe whether it calls Unreal actor/game-mode reset APIs or Sifu's whole-map restart function. Never invoke these functions from the mod until their semantics are established.
-2. **Build reset-based restoration** only after the reset completion signal, actor replacement/identity behavior, and post-reset initialization boundary are known. Apply saved supported fields only to validated initialized actors, then return to a playable paused encounter.
-3. **Measure coherent restoration** for one player and one enemy in Free Training, including health/structure, movement/physics, camera, animation, AI, and post-resume combat behavior.
-4. Input traces and native replay are secondary. Continue only where they help identify reset behavior, restore state, or verify a checkpoint.
-5. Keep established slowdown, pause, and frame stepping stable; the user performs all runtime gameplay tests manually.
+- Preserve and verify the existing slowdown, pause, frame stepping, GUI, input, and mouse behavior.
+- Keep F7/F8 labeled as a legacy partial actor snapshot. Do not add snapshot fields or call it a savestate.
+- Do not resume arbitrary-frame process rollback without a new architecture that demonstrates all-thread restoration and graphics compatibility in a standalone test first.
+- Sifu gameplay tests are performed manually by the user. Codex must never launch or control Sifu.
 
 `src/tas/state_reference.h` keeps checkpoint identity/timeline metadata separate from the future recording system: level path, player/enemy identities, engine tick, optional verified simulation frame, and recording branch ID.
 
