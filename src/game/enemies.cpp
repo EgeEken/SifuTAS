@@ -761,7 +761,6 @@ int EnumerateSpawnerSources(SourceLink* out, int max_out) {
     if (!world) return 0;
     if (!g_ai_spawner_class_attempted) {
         g_ai_spawner_class_attempted = true;
-
         g_ai_spawner_class = ue::FindObjectByPath(L"/Script/Sifu.AISpawner");
         SC_LOG("enemies: AISpawner class %s", g_ai_spawner_class ? "resolved" : "MISSING");
     }
@@ -774,16 +773,12 @@ int EnumerateSpawnerSources(SourceLink* out, int max_out) {
     for (int i = 0; i < g_spawners.num && count < max_out; ++i) {
         ue::UObject* spawner = g_spawners.data[i];
         if (!spawner) continue;
-
-        struct SpawnedAIParams {
-            ue::UObject* ReturnValue;
-        } spawned_params = {};
-        if (!ue::CallFunction(spawner, L"BPF_GetSpawnedAI", &spawned_params)) continue;
-        ue::UObject* spawned = spawned_params.ReturnValue;
-        if (!spawned) continue;
+        struct SpawnedAIParams { ue::UObject* ReturnValue; } params = {};
+        if (!ue::CallFunction(spawner, L"BPF_GetSpawnedAI", &params) || !params.ReturnValue)
+            continue;
         const std::uint32_t source_hash = SpawnerSourceHash(spawner);
         if (source_hash == 0) continue;
-        out[count++] = {spawned, source_hash};
+        out[count++] = {params.ReturnValue, source_hash};
     }
     return count;
 }
@@ -2593,6 +2588,38 @@ bool EnumerateWorldFighters(ue::UObject** out, int capacity, int* count_out,
             }
         }
         if (!duplicate) out[count++] = actor;
+    }
+    if (count_out) *count_out = count;
+    return true;
+}
+
+bool EnumerateWorldSpawnerAI(SpawnerAI* out, int capacity, int* count_out,
+                            int* total_out) {
+    if (count_out) *count_out = 0;
+    if (total_out) *total_out = 0;
+    if (!g_get_all_actors || !out || capacity <= 0) return false;
+    ue::UObject* world = ue::GetWorld();
+    if (!world) return false;
+    if (!g_ai_spawner_class_attempted) {
+        g_ai_spawner_class_attempted = true;
+        g_ai_spawner_class = ue::FindObjectByPath(L"/Script/Sifu.AISpawner");
+        SC_LOG("enemies: AISpawner class %s", g_ai_spawner_class ? "resolved" : "MISSING");
+    }
+    if (!g_ai_spawner_class) return false;
+
+    g_get_all_actors(world, g_ai_spawner_class, &g_spawners);
+    if (g_spawners.num < 0 || (g_spawners.num > 0 && !g_spawners.data)) return false;
+    if (total_out) *total_out = g_spawners.num;
+
+    int count = 0;
+    const int available = g_spawners.num < capacity ? g_spawners.num : capacity;
+    for (int i = 0; i < available; ++i) {
+        ue::UObject* spawner = g_spawners.data[i];
+        if (!ue::IsAliveObject(spawner)) continue;
+        struct SpawnedAIParams { ue::UObject* ReturnValue; } params = {};
+        if (!ue::CallFunction(spawner, L"BPF_GetSpawnedAI", &params) ||
+            !ue::IsAliveObject(params.ReturnValue)) params.ReturnValue = nullptr;
+        out[count++] = {spawner, params.ReturnValue};
     }
     if (count_out) *count_out = count;
     return true;

@@ -1,10 +1,18 @@
 # Toward coherent SifuTAS savestates
 
-Status: reset discovery diagnostics are implemented on `testing`, but no reset-based restoration or full gameplay savestate has been demonstrated. Sifu must be launched and controlled only by the user.
+Status: F8 now has an experimental same-world spawner-keyed enemy rebind fallback after manual reset. It is not yet runtime tested. No combat-order cleanup, reset completion boundary, or full gameplay savestate has been demonstrated. Sifu must be launched and controlled only by the user.
 
 ## Why current snapshots are incomplete
 
 `src/tas/checkpoint.cpp` records selected player and `AFightingCharacter` fields, verifies writes, and can restore transforms/vitals. It does **not** restore attack/defense orders, AI/behavior trees, animation graph state, pending timers and callbacks, level-script progression, spawning/despawning, RNG, or the state of the camera rig and physics simulation. “Supported fields restored” does not imply a coherent rollback. Adding arbitrary offsets to this snapshot will not solve those dependencies.
+
+### Experimental enemy rebinding
+
+Capture enumerates current-world `AAISpawner` objects using the existing enemy tracker and calls the reflected zero-argument `AAISpawner::BPF_GetSpawnedAI()` getter. An enemy stores the spawner's full path and class only when exactly one spawner returns that actor; unavailable, truncated, missing, or ambiguous associations are logged and mark the snapshot incomplete. Capacity is 256 spawners, so the 57-object Free Training inventory observed in the runtime log fits without truncation.
+
+Load tries exact actor path/class and current-world fighter membership first. If that fails, it matches one current-world spawner by saved full path and class, reads its current spawned actor, then checks fighter membership, saved enemy class, active/non-pooled status, living/standing state, idle montage state, and freshly resolved attack/defense/health components. It refuses ambiguous or missing associations. Transform, velocity, health, guard, time dilation, animation checks, and cloth reset use the resolved target. No saved component pointers are reused. This is limited to the same world instance and level; map restarts invalidate the checkpoint. Successful rebinding restores only existing selected fields and does not prove AI, pending orders, timers, or encounter progression were restored.
+
+The PDB gives `UOrderComponent::BPF_CancelAllOrders()` the native signature `void()` and its body forwards to `OrderManager::CancelAllOrdersAsynch`. That queues cancellation work; it is not a verified immediate idle reset, and its interactions with animation transitions, AI, callbacks, networking, and a paused world are unknown. `BPF_GetRunningAndPendingActionOrders` returns a reflected byte array and takes a boolean parameter; safely consuming/freeing that Unreal array and interpreting its IDs is not established. `UAIFightingComponent::BPF_ResetComboToDefault` takes an `FName` difficulty argument and changes combo selection, not proven active action state. Brain `StopLogic`/`RestartLogic` pause and restart behavior-tree logic and can strand or recreate task state. SifuTAS does not invoke these methods; there is no idle-state cancellation mode until effects and a reliable idle-order predicate are verified.
 
 ## Relevant precedents
 

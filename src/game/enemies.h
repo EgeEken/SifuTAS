@@ -61,10 +61,17 @@ struct EnemyRow {
     char name[40];
 };
 
+struct SpawnerAI {
+    ue::UObject* spawner = nullptr;
+    ue::UObject* actor = nullptr;
+};
+
 int GetEnemyRows(EnemyRow* out, int max_out);
 
 bool EnumerateWorldFighters(ue::UObject** out, int capacity, int* count_out,
                            int* total_out);
+bool EnumerateWorldSpawnerAI(SpawnerAI* out, int capacity, int* count_out,
+                            int* total_out);
 bool EnumerateActorsOfClass(void* actor_class, ue::UObject** out, int capacity,
                             int* count_out, int* total_out);
 

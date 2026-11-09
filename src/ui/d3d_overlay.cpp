@@ -39,6 +39,7 @@ WNDPROC g_original_wndproc = nullptr;
 bool g_initialised = false;
 bool g_failed = false;
 std::atomic<bool> g_menu_open{false};
+std::atomic<ULONGLONG> g_reset_trace_toast_until{0};
 std::atomic<int> g_rebind_action{-1};
 std::atomic<int> g_settings_status{0};
 ImGuiStyle g_base_style = {};
@@ -500,18 +501,31 @@ HRESULT __stdcall PresentHook(IDXGISwapChain* swap_chain, UINT sync_interval, UI
     if (swap_chain != g_swap_chain) return g_original_present(swap_chain, sync_interval, flags);
     if (g_initialised && !g_render_target && g_device && !CreateRenderTarget(swap_chain))
         return g_original_present(swap_chain, sync_interval, flags);
-    if (g_initialised && g_render_target &&
-        g_menu_open.load(std::memory_order_relaxed)) {
+    const bool menu_open = g_menu_open.load(std::memory_order_relaxed);
+    const bool toast_open = GetTickCount64() <
+        g_reset_trace_toast_until.load(std::memory_order_relaxed);
+    if (g_initialised && g_render_target && (menu_open || toast_open)) {
         LARGE_INTEGER started = {};
         LARGE_INTEGER ended = {};
         QueryPerformanceCounter(&started);
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ApplyGuiScale();
-        ImGui::GetIO().MouseDrawCursor = true;
-        FeedMenuInput();
+        ImGui::GetIO().MouseDrawCursor = menu_open;
+        if (menu_open) FeedMenuInput();
         ImGui::NewFrame();
-        DrawMenu();
+        if (menu_open) {
+            DrawMenu();
+        } else {
+            ImGui::SetNextWindowPos(ImVec2(24.f, 24.f));
+            ImGui::SetNextWindowBgAlpha(0.82f);
+            ImGui::Begin("##SifuTASTraceToast", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                             ImGuiWindowFlags_NoSavedSettings);
+            ImGui::TextUnformatted("SifuTAS: reset trace triggered");
+            ImGui::End();
+        }
         ImGui::Render();
         g_context->OMSetRenderTargets(1, &g_render_target, nullptr);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -611,6 +625,10 @@ void SetTailnetRows(const TailnetRow*, int) {}
 void SetSyncRows(const SyncRow*, int) {}
 bool IsMenuOpen() { return g_menu_open.load(std::memory_order_relaxed); }
 void ToggleMenu() { SetMenuOpen(!IsMenuOpen()); }
+void NotifyResetTraceTriggered() {
+    g_reset_trace_toast_until.store(GetTickCount64() + 1800,
+                                    std::memory_order_relaxed);
+}
 void SetMenuOpen(bool open) {
     g_menu_open.store(open, std::memory_order_relaxed);
     if (!open) g_rebind_action.store(-1, std::memory_order_relaxed);

@@ -13,6 +13,7 @@
 #include "../core/offsets.g.h"
 #include "../game/actors.h"
 #include "../game/enemies.h"
+#include "../ui/overlay.h"
 #include "../ue/reflection.h"
 
 namespace sifucoop::tas::reset_diagnostics {
@@ -300,6 +301,10 @@ void TriggerTrace(std::uint32_t source) {
     g_trace_start_qpc.store(QpcNow(), std::memory_order_relaxed);
     g_trace_start_ms.store(GetTickCount64(), std::memory_order_relaxed);
     g_trace_state.store(TraceState::Triggering, std::memory_order_release);
+    ui::NotifyResetTraceTriggered();
+    SC_LOG("tas: processevent trace trigger accepted source=%s marker_order=%llu",
+           source == 1 ? "native_reset_hook" : "fallback_hotkey",
+           static_cast<unsigned long long>(marker));
     SetResult(source == 1 ? "Native reset boundary triggered capture." :
                            "Fallback hotkey triggered capture; activate Reset Situation now.");
 }
@@ -915,7 +920,7 @@ void ResolveTraceNames() {
         TraceEvent& event = g_trace[i];
         for (std::uint32_t j = 0; j < i; ++j) {
             if (g_trace[j].raw.function == event.raw.function &&
-                event.function_path[0]) {
+                g_trace[j].function_path[0]) {
                 lstrcpynA(event.function_path, g_trace[j].function_path,
                           sizeof(event.function_path));
                 break;
@@ -930,7 +935,8 @@ void ResolveTraceNames() {
                                                    sizeof(event.function_path));
         }
         for (std::uint32_t j = 0; j < i; ++j) {
-            if (g_trace[j].raw.klass == event.raw.klass && event.class_path[0]) {
+            if (g_trace[j].raw.klass == event.raw.klass &&
+                g_trace[j].class_path[0]) {
                 lstrcpynA(event.class_path, g_trace[j].class_path, sizeof(event.class_path));
                 break;
             }

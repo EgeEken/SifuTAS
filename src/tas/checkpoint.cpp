@@ -53,10 +53,23 @@ enum class CaptureFailure {
     ClassPathTruncated,
 };
 
+enum class SpawnerBinding : std::uint8_t {
+    NotApplicable,
+    Unique,
+    Unavailable,
+    Truncated,
+    Missing,
+    Ambiguous,
+    IdentityUnavailable,
+};
+
 struct ActorState {
     ue::UObject* actor = nullptr;
     char identity[kIdentitySize] = {};
     char class_path[kClassPathSize] = {};
+    char spawner_identity[kIdentitySize] = {};
+    char spawner_class_path[kClassPathSize] = {};
+    SpawnerBinding spawner_binding = SpawnerBinding::NotApplicable;
     std::uint32_t fields = 0;
     bool player = false;
     ue::FVector location = {};
@@ -252,6 +265,55 @@ bool AppendActor(Snapshot* snapshot, ue::UObject* actor, bool player) {
     return true;
 }
 
+const char* SpawnerBindingName(SpawnerBinding binding) {
+    switch (binding) {
+        case SpawnerBinding::Unique: return "unique";
+        case SpawnerBinding::Unavailable: return "unavailable";
+        case SpawnerBinding::Truncated: return "truncated";
+        case SpawnerBinding::Missing: return "missing";
+        case SpawnerBinding::Ambiguous: return "ambiguous";
+        case SpawnerBinding::IdentityUnavailable: return "identity_unavailable";
+        default: return "not_applicable";
+    }
+}
+
+void CaptureSpawnerBinding(ActorState* state, const game::SpawnerAI* links,
+                           int link_count, bool available, bool truncated,
+                           bool* incomplete) {
+    if (!state || state->player) return;
+    state->spawner_binding = SpawnerBinding::Missing;
+    if (!available) {
+        state->spawner_binding = SpawnerBinding::Unavailable;
+    } else if (truncated) {
+        state->spawner_binding = SpawnerBinding::Truncated;
+    } else {
+        const game::SpawnerAI* match = nullptr;
+        int matches = 0;
+        for (int i = 0; i < link_count; ++i) {
+            if (links[i].actor == state->actor) {
+                match = &links[i];
+                ++matches;
+            }
+        }
+        if (matches > 1) {
+            state->spawner_binding = SpawnerBinding::Ambiguous;
+        } else if (matches == 1 &&
+                   ue::GetObjectPathName(match->spawner, state->spawner_identity,
+                                         sizeof(state->spawner_identity)) &&
+                   ue::GetObjectClassPathName(match->spawner, state->spawner_class_path,
+                                              sizeof(state->spawner_class_path))) {
+            state->spawner_binding = SpawnerBinding::Unique;
+        } else if (matches == 1) {
+            state->spawner_binding = SpawnerBinding::IdentityUnavailable;
+        }
+    }
+    if (state->spawner_binding != SpawnerBinding::Unique && incomplete)
+        *incomplete = true;
+    SC_LOG("tas: checkpoint spawner capture actor='%s' result=%s spawner='%s' class='%s'",
+           state->identity, SpawnerBindingName(state->spawner_binding),
+           state->spawner_identity, state->spawner_class_path);
+}
+
 bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
     const bool have_level = ue::GetCurrentLevelPath(level, level_size);
     if (!have_level) lstrcpynA(level, "<unavailable>", level_size);
@@ -284,6 +346,18 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
         return false;
     }
     snapshot.enumerated_count = 1;
+
+    game::SpawnerAI spawner_links[kEnumerationBuffer] = {};
+    int spawner_link_count = 0;
+    int spawner_total = 0;
+    const bool spawners_available = game::EnumerateWorldSpawnerAI(
+        spawner_links, kEnumerationBuffer, &spawner_link_count, &spawner_total);
+    const bool spawners_truncated = spawners_available &&
+                                    spawner_total > kEnumerationBuffer;
+    if (!spawners_available || spawners_truncated) snapshot.incomplete = true;
+    SC_LOG("tas: checkpoint spawner enumeration available=%u links=%d total=%d truncated=%u",
+           spawners_available ? 1u : 0u, spawner_link_count, spawner_total,
+           spawners_truncated ? 1u : 0u);
 
     ue::UObject* fighters[kEnumerationBuffer] = {};
     int fighter_count = 0;
@@ -322,7 +396,12 @@ bool Capture(Snapshot* out, char* level, int level_size, const char** error) {
                 continue;
             }
             ++snapshot.enumerated_count;
+            const int previous_count = snapshot.character_count;
             AppendActor(&snapshot, actor, false);
+            if (snapshot.character_count > previous_count)
+                CaptureSpawnerBinding(&snapshot.characters[previous_count], spawner_links,
+                                      spawner_link_count, spawners_available,
+                                      spawners_truncated, &snapshot.incomplete);
         }
         if (fighter_total > fighter_count) snapshot.incomplete = true;
     }
@@ -392,6 +471,106 @@ bool ActorIdentityMatches(const ActorState& state) {
            strcmp(class_path, state.class_path) == 0;
 }
 
+bool IsCurrentFighter(ue::UObject* actor, ue::UObject* const* fighters,
+                      int fighter_count) {
+    for (int i = 0; i < fighter_count; ++i)
+        if (fighters[i] == actor) return true;
+    return false;
+}
+
+ue::UObject* ResolveSpawnerActor(const ActorState& state,
+                                const game::SpawnerAI* links, int link_count,
+                                bool spawners_available, bool spawners_truncated,
+                                ue::UObject* const* fighters, int fighter_count,
+                                bool fighters_available, const char** method,
+                                const char** reason) {
+    if (state.spawner_binding != SpawnerBinding::Unique ||
+        !state.spawner_identity[0] || !state.spawner_class_path[0]) {
+        *reason = "no unique spawner identity was saved";
+        return nullptr;
+    }
+    if (!spawners_available || spawners_truncated) {
+        *reason = "current-world spawner enumeration unavailable or truncated";
+        return nullptr;
+    }
+    if (!fighters_available) {
+        *reason = "current-world fighter enumeration unavailable";
+        return nullptr;
+    }
+
+    const game::SpawnerAI* matched = nullptr;
+    int spawner_matches = 0;
+    for (int i = 0; i < link_count; ++i) {
+        char identity[kIdentitySize] = {};
+        char class_path[kClassPathSize] = {};
+        if (ue::GetObjectPathName(links[i].spawner, identity, sizeof(identity)) &&
+            ue::GetObjectClassPathName(links[i].spawner, class_path,
+                                       sizeof(class_path)) &&
+            strcmp(identity, state.spawner_identity) == 0 &&
+            strcmp(class_path, state.spawner_class_path) == 0) {
+            matched = &links[i];
+            ++spawner_matches;
+        }
+    }
+    if (spawner_matches != 1) {
+        *reason = spawner_matches ? "saved spawner identity is ambiguous"
+                                  : "saved spawner is missing from current world";
+        return nullptr;
+    }
+    if (!matched->actor || !ue::IsAliveObject(matched->actor)) {
+        *reason = "saved spawner has no active spawned actor";
+        return nullptr;
+    }
+
+    ue::UObject* actor = matched->actor;
+    char class_path[kClassPathSize] = {};
+    if (!ue::GetObjectClassPathName(actor, class_path, sizeof(class_path)) ||
+        strcmp(class_path, state.class_path) != 0) {
+        *reason = "spawned actor class changed";
+        return nullptr;
+    }
+    if (!IsCurrentFighter(actor, fighters, fighter_count)) {
+        *reason = "spawned actor is not a current-world fighter";
+        return nullptr;
+    }
+    ue::FVector location = {};
+    if (!ue::GetActorLocation(actor, &location) || !Finite(location) ||
+        game::IsPooled(location)) {
+        *reason = "spawned actor is inactive or pooled";
+        return nullptr;
+    }
+
+    const game::Fighter fighter = game::ResolveFighter(actor);
+    if (!fighter.attack || !fighter.defense || !fighter.health ||
+        !ue::IsAliveObject(fighter.attack) || !ue::IsAliveObject(fighter.defense) ||
+        !ue::IsAliveObject(fighter.health)) {
+        *reason = "spawned actor combat components are not initialized";
+        return nullptr;
+    }
+    bool current_down = false;
+    bool current_dead = false;
+    ue::AnimState animation = {};
+    if (state.down || state.dead || !(state.fields & (Down | Dead)) ||
+        !game::ReadDownDeathState(fighter, &current_down, &current_dead) ||
+        current_down || current_dead || game::GetHealth(fighter) <= 0.5f ||
+        !state.animation.position_valid || state.animation.montage ||
+        !ue::ReadAnimState(actor, &animation) || !animation.position_valid ||
+        animation.montage) {
+        *reason = "spawner rebinding requires saved and current living idle actors";
+        return nullptr;
+    }
+
+    int spawned_matches = 0;
+    for (int i = 0; i < link_count; ++i)
+        if (links[i].actor == actor) ++spawned_matches;
+    if (spawned_matches != 1) {
+        *reason = "spawned actor is associated with multiple spawners";
+        return nullptr;
+    }
+    *method = "spawner";
+    return actor;
+}
+
 bool VerifyTransform(ue::UObject* actor, const ActorState& state,
                      std::uint32_t* restored) {
     ue::FVector location = {};
@@ -411,6 +590,8 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
                   int* restored_count, int* partial_count, int* skipped_count,
                   int* cloth_reset_count, ue::UObject* const* fighters,
                   int fighter_count, bool fighters_available,
+                  const game::SpawnerAI* spawners, int spawner_count,
+                  bool spawners_available, bool spawners_truncated,
                   ActorDiagnostic* diagnostic) {
     if (diagnostic) {
         lstrcpynA(diagnostic->identity, state.identity, sizeof(diagnostic->identity));
@@ -418,32 +599,36 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
         diagnostic->player = state.player;
     }
     const char* reason = "";
-    if (!ActorIdentityMatches(state)) {
-        reason = "actor missing or UObject identity/class changed";
-    } else if (state.player) {
-        if (ue::GetPlayerCharacter(snapshot.world, 0) != state.actor)
+    const char* match_method = "original";
+    ue::UObject* target = nullptr;
+    if (state.player) {
+        if (ActorIdentityMatches(state) &&
+            ue::GetPlayerCharacter(snapshot.world, 0) == state.actor)
+            target = state.actor;
+        else
             reason = "saved player is no longer the current player";
     } else if (!fighters_available) {
         reason = "current-world fighter enumeration unavailable";
+    } else if (ActorIdentityMatches(state) &&
+               IsCurrentFighter(state.actor, fighters, fighter_count)) {
+        target = state.actor;
     } else {
-        bool found = false;
-        for (int i = 0; i < fighter_count; ++i) {
-            if (fighters[i] == state.actor) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) reason = "actor is no longer a current-world FightingCharacter";
+        target = ResolveSpawnerActor(state, spawners, spawner_count,
+                                     spawners_available, spawners_truncated,
+                                     fighters, fighter_count, fighters_available,
+                                     &match_method, &reason);
     }
-    if (reason[0]) {
+    if (!target || reason[0]) {
         ++*skipped_count;
         if (diagnostic) diagnostic->skipped = true;
-        SC_LOG("tas: checkpoint restore actor[%d] '%s' skipped: %s", index,
-               state.identity, reason);
+        SC_LOG("tas: checkpoint restore actor[%d] '%s' binding=%s skipped: %s", index,
+               state.identity, match_method, reason[0] ? reason : "target unresolved");
         return;
     }
 
-    const game::Fighter fighter = game::ResolveFighter(state.actor);
+    SC_LOG("tas: checkpoint restore actor[%d] saved='%s' target='%p' binding=%s spawner='%s'",
+           index, state.identity, target, match_method, state.spawner_identity);
+    const game::Fighter fighter = game::ResolveFighter(target);
     std::uint32_t restored = 0;
     std::uint32_t failed = 0;
     std::uint32_t unsupported = 0;
@@ -452,7 +637,7 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
     const bool current_life_state =
         game::ReadDownDeathState(fighter, &current_down, &current_dead);
     ue::AnimState current_animation = {};
-    const bool current_animation_state = ue::ReadAnimState(state.actor, &current_animation) &&
+    const bool current_animation_state = ue::ReadAnimState(target, &current_animation) &&
                                          current_animation.position_valid &&
                                          (!current_animation.montage ||
                                           ue::IsAliveObject(current_animation.montage));
@@ -468,18 +653,18 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
         ue::FVector target_location = state.location;
         ue::FRotator target_rotation = state.rotation;
         const bool have_location = (state.fields & Location) != 0 ||
-                                   ue::GetActorLocation(state.actor, &target_location);
+                                   ue::GetActorLocation(target, &target_location);
         const bool have_rotation = (state.fields & Rotation) != 0 ||
-                                   ue::GetActorRotation(state.actor, &target_rotation);
+                                   ue::GetActorRotation(target, &target_rotation);
         if (!safe_motion) {
             unsupported |= state.fields & (Location | Rotation);
         } else if (!have_location || !have_rotation ||
-                   !game::TeleportActor(state.actor, target_location, target_rotation)) {
+                   !game::TeleportActor(target, target_location, target_rotation)) {
             failed |= state.fields & (Location | Rotation);
         } else {
-            if (!VerifyTransform(state.actor, state, &restored))
+            if (!VerifyTransform(target, state, &restored))
                 failed |= state.fields & (Location | Rotation) & ~restored;
-            const bool cloth_reset = ue::ResetClothForTeleport(state.actor);
+            const bool cloth_reset = ue::ResetClothForTeleport(target);
             if (cloth_reset) ++*cloth_reset_count;
             SC_LOG("tas: checkpoint restore actor[%d] cloth_reset=%s", index,
                    cloth_reset ? "queued" : "unavailable");
@@ -488,9 +673,9 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
     if (state.fields & Velocity) {
         if (!safe_motion) {
             unsupported |= Velocity;
-        } else if (game::SetPresentationVelocity(state.actor, state.velocity)) {
+        } else if (game::SetPresentationVelocity(target, state.velocity)) {
             ue::FVector velocity = {};
-            if (game::GetActorVelocity(state.actor, &velocity) &&
+            if (game::GetActorVelocity(target, &velocity) &&
                 SameVector(velocity, state.velocity))
                 restored |= Velocity;
             else
@@ -547,8 +732,8 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
     }
 
     if (state.fields & TimeDilation) {
-        if (game::SetActorTimeDilation(state.actor, state.time_dilation) &&
-            std::fabs(game::GetActorTimeDilation(state.actor) - state.time_dilation) <= 0.001f)
+        if (game::SetActorTimeDilation(target, state.time_dilation) &&
+            std::fabs(game::GetActorTimeDilation(target) - state.time_dilation) <= 0.001f)
             restored |= TimeDilation;
         else
             failed |= TimeDilation;
@@ -568,7 +753,7 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
             restored |= Animation;
         else if (state.animation.montage &&
                  current_animation.montage == state.animation.montage &&
-                 ue::SetActiveMontagePosition(state.actor, state.animation))
+                 ue::SetActiveMontagePosition(target, state.animation))
             restored |= Animation;
         else
             unsupported |= Animation;
@@ -577,13 +762,14 @@ void RestoreActor(const Snapshot& snapshot, const ActorState& state, int index,
     const std::uint32_t missing = kAllCaptureFields & ~state.fields;
     if (failed || unsupported || missing) {
         ++*partial_count;
-        SC_LOG("tas: checkpoint restore actor[%d] '%s' partial available=%03X restored=%03X "
+        SC_LOG("tas: checkpoint restore actor[%d] '%s' binding=%s partial available=%03X restored=%03X "
                "failed=%03X unsupported=%03X unavailable=%03X",
-               index, state.identity, state.fields, restored, failed, unsupported, missing);
+               index, state.identity, match_method, state.fields, restored, failed,
+               unsupported, missing);
     } else {
         ++*restored_count;
-        SC_LOG("tas: checkpoint restore actor[%d] '%s' restored fields=%03X",
-               index, state.identity, restored);
+        SC_LOG("tas: checkpoint restore actor[%d] '%s' binding=%s restored fields=%03X",
+               index, state.identity, match_method, restored);
     }
     if (diagnostic) {
         diagnostic->restored_fields = restored;
@@ -666,7 +852,7 @@ void SaveCheckpoint() {
 
 void InvalidateSnapshot(const char* error) {
     AcquireSRWLockExclusive(&g_lock);
-    g_snapshot = {};
+    g_snapshot = Snapshot{};
     g_status.exists = false;
     g_status.incomplete = false;
     g_status.camera_available = false;
@@ -749,8 +935,27 @@ void LoadCheckpoint() {
     const bool fighters_available = !needs_fighter_enumeration ||
         game::EnumerateWorldFighters(current_fighters, kEnumerationBuffer,
                                      &current_fighter_count, &current_fighter_total);
+    bool needs_spawner_enumeration = false;
+    for (int i = 0; i < snapshot.character_count; ++i) {
+        const ActorState& state = snapshot.characters[i];
+        if (!state.player && state.spawner_binding == SpawnerBinding::Unique &&
+            !ActorIdentityMatches(state))
+            needs_spawner_enumeration = true;
+    }
+    game::SpawnerAI current_spawners[kEnumerationBuffer] = {};
+    int current_spawner_count = 0;
+    int current_spawner_total = 0;
+    const bool spawners_available = !needs_spawner_enumeration ||
+        game::EnumerateWorldSpawnerAI(current_spawners, kEnumerationBuffer,
+                                      &current_spawner_count, &current_spawner_total);
+    const bool spawners_truncated = needs_spawner_enumeration && spawners_available &&
+                                    current_spawner_total > kEnumerationBuffer;
     SC_LOG("tas: checkpoint load fighter enumeration available=%u count=%d total=%d",
            fighters_available ? 1u : 0u, current_fighter_count, current_fighter_total);
+    if (needs_spawner_enumeration)
+        SC_LOG("tas: checkpoint load spawner enumeration available=%u links=%d total=%d truncated=%u",
+               spawners_available ? 1u : 0u, current_spawner_count,
+               current_spawner_total, spawners_truncated ? 1u : 0u);
     SC_LOG("tas: checkpoint load requested tick=%llu characters=%d discovered=%d incomplete=%u",
            static_cast<unsigned long long>(hooks::FrameCount()), snapshot.character_count,
            snapshot.enumerated_count, snapshot.incomplete ? 1u : 0u);
@@ -762,6 +967,8 @@ void LoadCheckpoint() {
         RestoreActor(snapshot, snapshot.characters[i], i, &restored_count,
                      &partial_count, &skipped_count, &cloth_reset_count,
                      current_fighters, current_fighter_count, fighters_available,
+                     current_spawners, current_spawner_count, spawners_available,
+                     spawners_truncated,
                      &actor_diagnostics[i]);
     }
 

@@ -106,5 +106,6 @@ bool IsMenuOpen();
 void ToggleMenu();
 void SetMenuOpen(bool open);
 bool IsBindingCaptureActive();
+void NotifyResetTraceTriggered();
 
 }
