@@ -1,16 +1,22 @@
-[tas]
-; Each binding is a Windows virtual key code and modifier mask: Ctrl=1, Alt=2, Shift=4.
-binding_0=112,0
-binding_1=113,0
-binding_2=114,0
-binding_3=115,0
-binding_4=116,0
-binding_5=117,0
-binding_6=118,0
-binding_7=119,0
-binding_8=121,0
-speed_1=0.5
-speed_2=0.2
-speed_3=0.1
-frames_per_step=1
-gui_scale=1.4
+[time_control]
+version=1
+; Values are Windows virtual-key codes plus modifier mask: Ctrl=1, Alt=2, Shift=4.
+; Slots 1-6 default to the number keys 1-6; slots 7-9 are unbound.
+slot_1=49,0
+slot_2=50,0
+slot_3=51,0
+slot_4=52,0
+slot_5=53,0
+slot_6=54,0
+slot_7=0,0
+slot_8=0,0
+slot_9=0,0
+; Preset speed is an integer from 1 to 20, representing tenths of a multiplier.
+preset_1=8
+preset_2=5
+preset_3=2
+preset_4=10
+preset_5=10
+preset_6=10
+frames_per_step=5
+show_speed_indicator=1

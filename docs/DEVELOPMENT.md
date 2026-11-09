@@ -1,5 +1,7 @@
 # Development scope and architecture
 
+> Historical research document. The project scope changed on 2026-11-09 to a focused Sifu time-control utility. Savestates, native replay, input recording, deterministic playback, network/co-op runtime, and reset diagnostics are abandoned and are not supported or active objectives. Use `README.md`, `AGENTS.md`, and `docs/TESTING.md` for current behavior. The process rollback and combat-state notes below are retained as research history only.
+
 ## Objective
 
 Create tool-assisted **Sifu combat choreography videos** with input precision beyond human play. Reproducibility is desirable for editing, but no competitive run validation is required. A standalone process-level experiment did not demonstrate rollback and found an unmanaged runtime thread; arbitrary-frame savestates are not a current development objective. Preserve the working time-control mod. Input recording and native replay remain secondary and must not be presented as savestates.

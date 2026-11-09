@@ -1,5 +1,7 @@
 # SifuTAS savestate feasibility
 
+> Archived research. Since 2026-11-09, SifuTAS is scoped as a time-control mod. This document is retained for historical reference; savestates are not an active feature or development objective.
+
 Status: arbitrary-frame process rollback was not demonstrated by the independent Windows PSS experiment. The current architecture does not have a safe path to restore all process threads and external graphics/system state. Stop expanding the actor snapshot; it is a legacy diagnostic feature, not a gameplay savestate. See [the process rollback feasibility report](PROCESS_ROLLBACK_FEASIBILITY.md). Sifu must be launched and controlled only by the user.
 
 ## Why current snapshots are incomplete

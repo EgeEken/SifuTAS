@@ -5,16 +5,6 @@
 #include "core/hooks.h"
 #include "core/log.h"
 #include "game/actors.h"
-#include "game/coop.h"
-#include "game/enemies.h"
-#include "game/orders.h"
-#include "game/player2.h"
-#include "game/puppet.h"
-#include "game/replay.h"
-#include "game/selftest.h"
-#include "net/instance_guard.h"
-#include "net/protocol.h"
-#include "net/session.h"
 #include "core/offsets.g.h"
 #include "tas/controls.h"
 #include "ui/overlay.h"
@@ -30,7 +20,7 @@ namespace {
 
 HANDLE g_game_process_mutex = nullptr;
 
-// Launching through the root Sifu.exe shim (which SifuCoopLauncher does) starts
+// The root executable can be a short-lived launcher shim that starts
 // a short-lived first game process that loads this dll, holds the guard for a
 // few seconds, relaunches the real game and exits. Measured live 2026-09-14:
 // the real process attached 3.4 s later, found the guard taken, and stayed
@@ -42,16 +32,16 @@ bool AcquireGameProcessGuard() {
     bool logged_wait = false;
     for (;;) {
         SetLastError(ERROR_SUCCESS);
-        HANDLE mutex = CreateMutexA(nullptr, FALSE, sifucoop::net::kGameProcessMutexNameA);
+        HANDLE mutex = CreateMutexA(nullptr, FALSE, "Local\\SifuTAS.GameProcessGuard");
         const DWORD error = GetLastError();
         if (!mutex) {
             char message[192] = {};
             _snprintf(message, sizeof(message),
-                      "SifuCoop could not create its process guard (Windows error %lu). "
+                      "SifuTAS could not create its process guard (Windows error %lu). "
                       "The mod will stay inactive to avoid unsafe duplicate hooks.",
                       error);
             SC_LOG("guard: process mutex creation failed (%lu) -- refusing to hook", error);
-            MessageBoxA(nullptr, message, "SifuCoop not started",
+            MessageBoxA(nullptr, message, "SifuTAS not started",
                         MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
             return false;
         }
@@ -64,7 +54,7 @@ bool AcquireGameProcessGuard() {
         CloseHandle(mutex);
         if (!logged_wait) {
             logged_wait = true;
-            SC_LOG("guard: another SifuCoop game process holds the guard -- waiting up to "
+            SC_LOG("guard: another SifuTAS game process holds the guard -- waiting up to "
                    "%lus in case it is the launcher shim handing over",
                    kRetryForMs / 1000);
         }
@@ -72,11 +62,11 @@ bool AcquireGameProcessGuard() {
         Sleep(kRetryEveryMs);
     }
 
-    SC_LOG("guard: another SifuCoop game process is still active -- refusing to hook");
+    SC_LOG("guard: another SifuTAS game process is still active -- refusing to hook");
     MessageBoxA(nullptr,
-                "Another SifuCoop-enabled Sifu process is already running. Close it "
+                "Another SifuTAS-enabled Sifu process is already running. Close it "
                 "before starting another copy. This game will continue without the mod.",
-                "SifuCoop already running",
+                "SifuTAS already running",
                 MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
     return false;
 }
@@ -120,11 +110,11 @@ bool VerifyGameBuild(HMODULE game, uintptr_t base) {
                "--exe <Sifu-Win64-Shipping.exe> --emit-build <name> build.json");
         char message[512] = {};
         wsprintfA(message,
-                  "SifuCoop did not start because this Sifu executable is not in its "
+                  "SifuTAS did not start because this Sifu executable is not in its "
                   "supported-build table.\n\nBuild stamp: 0x%08lX\nImage size: 0x%08lX"
-                  "\n\nThe game will continue normally. Update SifuCoop before hosting or joining.",
+                  "\n\nThe game will continue normally. Rebuild SifuTAS for this executable.",
                   id.time_date_stamp, id.size_of_image);
-        MessageBoxA(nullptr, message, "SifuCoop needs an update",
+        MessageBoxA(nullptr, message, "SifuTAS needs an update",
                     MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);        return false;
     }
 
@@ -155,6 +145,9 @@ bool VerifyGameBuild(HMODULE game, uintptr_t base) {
     };
     const Required required[] = {
         {"UGameEngine::Tick", offsets::UGameEngine_Tick},
+        {"UWorld::Tick", offsets::UWorld_Tick},
+        {"AWorldSettings::GetEffectiveTimeDilation", offsets::AWorldSettings_GetEffectiveTimeDilation},
+        {"APlayerController::InputKey", offsets::APlayerController_InputKey},
         {"GEngine", offsets::GEngine},
         {"GWorld", offsets::GWorld},
         {"FName ctor", offsets::FName_FromWide},
@@ -162,14 +155,18 @@ bool VerifyGameBuild(HMODULE game, uintptr_t base) {
         {"UObject::ProcessEvent", offsets::UObject_ProcessEvent},
         {"UGameplayStatics::GetPlayerCharacter", offsets::UGameplayStatics_GetPlayerCharacter},
         {"UObjectBaseUtility::GetPathName", offsets::UObjectBaseUtility_GetPathName},
+        {"FMemory::Free", offsets::FMemory_Free},
         {"StaticFindObjectSafe", offsets::StaticFindObjectSafe},
-        {"UGameplayStatics::GetAllActorsOfClass", offsets::UGameplayStatics_GetAllActorsOfClass},
-        {"AFightingCharacter::StaticClass", offsets::AFightingCharacter_StaticClass},
-        {"UWorld::SpawnActor", offsets::UWorld_SpawnActor_VecRot},
         {"UCharacterHealthComponent::Get", offsets::UCharacterHealthComponent_Get},
+        {"UCharacterHealthComponent::IsDown", offsets::UCharacterHealthComponent_IsDown},
+        {"UHealthComponent::IsDead", offsets::UHealthComponent_IsDead},
+        {"UWGGameplayStatics::IsGameOver", offsets::UWGGameplayStatics_BPF_IsGameOver},
         {"UHealthComponent::m_fHealth", offsets::M_UHealthComponent_fHealth},
         {"UHealthComponent::m_fMaxHealth", offsets::M_UHealthComponent_fMaxHealth},
-        {"AFightingCharacter::PlayOrder", offsets::AFightingCharacter_PlayOrder},
+        {"UWorld::IsInSeamlessTravel", offsets::UWorld_IsInSeamlessTravel},
+        {"UWorld::OwningGameInstance", offsets::M_UWorld_OwningGameInstance},
+        {"GameInstance::loadingScreen", offsets::M_UThePlainesGameInstance_loadingScreen},
+        {"GameState::MatchState", offsets::M_AGameState_MatchState},
     };
     int required_missing = 0;
     for (const Required& item : required) {
@@ -180,33 +177,23 @@ bool VerifyGameBuild(HMODULE game, uintptr_t base) {
     if (required_missing > 0) {
         char message[512] = {};
         wsprintfA(message,
-                  "SifuCoop did not start: %d required offset(s) are missing from its '%s' "
+                  "SifuTAS did not start: %d required offset(s) are missing from its '%s' "
                   "table. Rebuild the mod against this game folder before playing.\n\n"
                   "The game will continue normally without the mod.",
                   required_missing, build);
-        MessageBoxA(nullptr, message, "SifuCoop needs a rebuild",
+        MessageBoxA(nullptr, message, "SifuTAS needs a rebuild",
                     MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
         return false;
     }
     return true;
 }
 
-void LogResolved(uintptr_t base, const char* name, uint32_t rva) {
-    const uintptr_t address = base + rva;
-    const auto* bytes = reinterpret_cast<const BYTE*>(address);
-    SC_LOG("  %-38s rva=0x%08X  addr=0x%llX  bytes=%02X %02X %02X %02X %02X", name, rva,
-           static_cast<unsigned long long>(address), bytes[0], bytes[1], bytes[2],
-           bytes[3], bytes[4]);
-}
-
-#ifndef SIFUCOOP_COMMIT
-#define SIFUCOOP_COMMIT "unknown"
+#ifndef SIFUTAS_COMMIT
+#define SIFUTAS_COMMIT "unknown"
 #endif
 
 DWORD WINAPI Bootstrap(LPVOID) {
-    SC_LOG("build: SifuCoop protocol v%u, commit %s, compiled %s %s",
-           static_cast<unsigned int>(sifucoop::net::kProtocolVersion), SIFUCOOP_COMMIT,
-           __DATE__, __TIME__);
+    SC_LOG("build: SifuTAS commit %s, compiled %s %s", SIFUTAS_COMMIT, __DATE__, __TIME__);
     if (!AcquireGameProcessGuard()) return 0;
 
     HMODULE game = GetModuleHandleA(nullptr);
@@ -216,17 +203,6 @@ DWORD WINAPI Bootstrap(LPVOID) {
         SC_LOG("bootstrap: aborted, mod is inert (the game will run normally)");
         return 0;
     }
-
-    SC_LOG("bootstrap: resolved targets --");
-    LogResolved(base, "UGameEngine::Tick", offsets::UGameEngine_Tick);
-    LogResolved(base, "UWorld::SpawnActor", offsets::UWorld_SpawnActor);
-    LogResolved(base, "AActor::SetActorLocationAndRotation",
-                offsets::AActor_SetActorLocationAndRotation);
-    LogResolved(base, "AActor::K2_DestroyActor", offsets::AActor_K2_DestroyActor);
-    LogResolved(base, "UEngine::GetWorldFromContextObject",
-                offsets::UEngine_GetWorldFromContextObject);
-    LogResolved(base, "GEngine", offsets::GEngine);
-    LogResolved(base, "GWorld", offsets::GWorld);
 
     auto** gengine = reinterpret_cast<void**>(base + offsets::GEngine);
     void* engine = nullptr;
@@ -254,26 +230,12 @@ DWORD WINAPI Bootstrap(LPVOID) {
     }
 
     sifucoop::tas::LoadSettings();
-    sifucoop::coop::Load();
-    const bool network_started = sifucoop::net::StartSession();
-    if (!network_started && sifucoop::net::GetRole() == sifucoop::net::Role::Host) {
-        const char* failure = sifucoop::net::GetStartFailure();
-        if (!failure || !failure[0]) failure = "The SifuCoop host socket could not start.";
-        SC_LOG("bootstrap: host startup failed before hooks, mod is inert: %s", failure);
-        MessageBoxA(nullptr, failure, "SifuCoop host not started",
-                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    sifucoop::game::InitActors(base);
+
+    if (!sifucoop::ui::StartInGameOverlay()) {
+        SC_LOG("bootstrap: GUI unavailable; time-control hooks were not installed");
         return 0;
     }
-
-    sifucoop::game::InitActors(base);
-    sifucoop::game::InitPuppet(base);
-    sifucoop::game::InitPlayer2(base);
-    sifucoop::game::InitEnemies(base);
-    sifucoop::game::InstallPlayOrderHook(base);
-    sifucoop::game::InitSelfTest();
-
-    if (!sifucoop::ui::StartInGameOverlay())
-        SC_LOG("ui: TAS GUI unavailable; keyboard controls remain active");
 
     if (!sifucoop::hooks::InstallTickHook(base, engine)) {
         SC_LOG("bootstrap: tick hook not installed -- mod is inert");
@@ -295,8 +257,6 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
         // role, so the two logs of one session can be read against each other.
         // Installed before anything else runs; it reports nothing until a
         // session exists, and costs two reads per line after that.
-        sifucoop::log::SetSharedClock(&sifucoop::net::SharedClockMs,
-                                      &sifucoop::net::SharedClockValid);
 
         if (!sifucoop::proxy::Init()) {
             SC_LOG("proxy: init incomplete -- audio may misbehave");

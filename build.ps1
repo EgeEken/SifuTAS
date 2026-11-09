@@ -72,26 +72,10 @@ $sources = @(
     "src\core\log.cpp"
     "src\core\hooks.cpp"
     "src\tas\controls.cpp"
-    "src\tas\input_trace.cpp"
-    "src\tas\reset_trace.cpp"
-    "src\tas\reset_diagnostics.cpp"
-    "src\tas\checkpoint.cpp"
-    "src\core\trace.cpp"
+    "src\tas\input_hook.cpp"
     "src\ue\reflection.cpp"
     "src\game\actors.cpp"
-    "src\game\coop.cpp"
-    "src\game\selftest.cpp"
-    "src\game\puppet.cpp"
-    "src\game\runstate.cpp"
-    "src\game\replay.cpp"
-    "src\game\player2.cpp"
-    "src\net\crypto.cpp"
-    "src\net\session.cpp"
-    "src\net\tailscale.cpp"
-    "src\\game\\orders.cpp"
-    "src\\game\\enemies.cpp"
-    "src\\ui\\overlay.cpp"
-    "src\\ui\\d3d_overlay.cpp"
+    "src\ui\d3d_overlay.cpp"
 
     "third_party\imgui\imgui.cpp"
     "third_party\imgui\imgui_draw.cpp"
@@ -132,12 +116,12 @@ try {
     }
 } catch {}
 $flags = "-O2 -std=c++17 -static -static-libgcc -static-libstdc++ $imguiInc " +
-         "-DSIFUCOOP_COMMIT=\`"$commit\`" " +
-         "-Wall -Wextra -s -lkernel32 -luser32 -lws2_32 -liphlpapi -lpsapi -lgdi32 -ld3d11 -ldxgi " +
+         "-DSIFUTAS_COMMIT=\`"$commit\`" " +
+         "-Wall -Wextra -s -lkernel32 -luser32 -lgdi32 -ld3d11 -ldxgi " +
          "-ld3dcompiler -ldwmapi"
 $srcArgs = ($sources | ForEach-Object { "`"$_`"" }) -join " "
 $defFile = Join-Path $Root "src\proxy\dsound.def"
-$logFile = Join-Path $OutDir "build-input-trace.log"
+$logFile = Join-Path $OutDir "build-time-control.log"
 
 cmd /c "g++ -shared -o `"$dll`" $srcArgs `"$defFile`" $flags > `"$logFile`" 2>&1"
 $compileOk = ($LASTEXITCODE -eq 0)

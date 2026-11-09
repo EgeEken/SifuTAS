@@ -1,5 +1,7 @@
 # Process rollback feasibility
 
+> Archived research for the former savestate goal. The current project scope is time control; this experiment is not an active development plan.
+
 ## Result
 
 This experiment did not restore execution. It demonstrates that Windows Process Snapshotting can preserve a readable copy of a controlled process state; it does not provide an inverse operation that makes the live process resume from that copy.

@@ -2,19 +2,7 @@
 
 namespace sifucoop::tas {
 
-enum class Action : int {
-    PauseResume,
-    FrameAdvance,
-    SpeedHalf,
-    SpeedFifth,
-    SpeedTenth,
-    ToggleGui,
-    SaveCheckpoint,
-    LoadCheckpoint,
-    ToggleNativeRecording,
-    ResetTraceTrigger,
-    Count,
-};
+enum class SlotKind : int { Pause, Speed, FrameOne, FrameMany };
 
 enum Modifier : unsigned int {
     ModifierNone = 0,
@@ -29,24 +17,30 @@ struct Binding {
 };
 
 struct Settings {
-    Binding bindings[static_cast<int>(Action::Count)] = {};
-    float speeds[3] = {0.5f, 0.2f, 0.1f};
-    int frames_per_step = 1;
-    float gui_scale = 1.4f;
+    Binding bindings[9] = {};
+    int preset_steps[6] = {8, 5, 2, 10, 10, 10};
+    int frames_per_step = 5;
+    bool show_speed_indicator = true;
 };
 
 void LoadSettings();
+void UpdateInputNames();
 Settings GetSettings();
-bool SetBinding(Action action, Binding binding);
-bool SetSpeed(int index, float speed);
+bool SetBinding(int slot, Binding binding);
+bool SetPresetStep(int preset, int step);
 bool SetFramesPerStep(int frames);
-bool SetGuiScale(float scale);
+bool SetShowSpeedIndicator(bool show);
 bool SaveSettings();
 bool SettingsSaved();
-bool WasActionPressed(Action action, bool focused);
-void ConsumeBindingKeyUntilRelease(int key);
-void ReleaseBindingKey(int key);
-const char* ActionName(Action action);
+bool WasGuiTogglePressed(bool focused);
+bool WasSlotPressed(int slot, bool focused);
+bool IsInputBinding(int key_comparison_index, int slot);
+bool IsGuiToggleInput(int key_comparison_index);
 bool BindingText(Binding binding, char* out, int out_size);
+const char* SlotActionText(int slot);
+SlotKind GetSlotKind(int slot);
+int PresetIndexForSlot(int slot);
+float SpeedForPreset(int preset);
+int SpeedStep(float speed);
 
 }

@@ -1,124 +1,44 @@
-# Phase 1 test procedure (Windows)
+# Testing SifuTAS
 
-## Process rollback feasibility experiment
+Codex must never launch, close, kill, or control Sifu. The user performs all runtime tests. Before deployment, check whether Sifu is running; if so, leave it untouched and skip installation.
 
-On 2026-11-09, `tools/procrollback/rollback_test.cpp` passed five standalone capture-and-refusal runs. Each run started three cooperative simulation threads and found a fourth thread beginning in `ntdll.dll`. PSS captured the private-memory clone and all four thread contexts, but the restore gate refused because not every process thread had a cooperative checkpoint point. The clone retained the payload's state A hash while branches B/C changed payload RNG, timers, heap list contents, and allocation/free counters. Worker TLS counters were separately measured at each barrier; clone TLS was not inspected. No memory or thread context was restored. The mean capture duration was 6.17 ms for about 8.71 MB of private committed regions and 12 regions. D3D11 testing was skipped because the thread/memory rollback gate failed. See [PROCESS_ROLLBACK_FEASIBILITY.md](PROCESS_ROLLBACK_FEASIBILITY.md). No Sifu DLL was changed or deployed.
+## Offline checks
 
-F7/F8 remains a legacy experimental actor snapshot that restores selected fields only; it is not a gameplay savestate. The process rollback experiment did not demonstrate safe restoration, so further arbitrary-frame savestate work is paused. Runtime gameplay testing is performed manually by the user. Codex must never launch, close, kill, or control Sifu.
+From PowerShell in the repository:
 
-The Snapshot tab and F7/F8 now call the feature an **experimental state snapshot**. It restores selected actor fields only; combat actions and encounter progression are not restored.
+```powershell
+.\build.ps1 -GameDir "C:\path\to\Sifu\Sifu\Binaries\Win64" -LocalBuildName steam
+git diff --check
+```
 
-For native replay, open F6, use the Recording tab's Start control (or F10), close the GUI and perform a short Free Training sequence, then reopen F6 and Stop (or press F10). Check GUI status and `replay:` log entries for system/instance availability, `CanStartRecording`, disabled state, active recording plus demo driver, and finalized nonzero length. Verify the entry in Sifu's Replay Editor. No manual `SifuCoop.ini` change is needed. The F10 action only polls while Sifu is focused. This records Sifu's native replay stream, not TAS inputs. Eligibility and Replay Editor visibility remain to be tested; do not treat the result as a savestate.
+The build uses the installed matching PDB to regenerate offsets and runs the existing crypto vectors. A successful build is not an in-game test.
 
-The Recording tab's **Capture input trace (5 s)** control is diagnostic only. It buffers up to 8192 events, then writes the trace to `SifuCoop.log`: controller key events, local `UPlayerInput` key/axis callbacks, input-stack begin/end, and engine/world tick begin/end, with event order, relative microseconds, thread ID, key/axis values, and engine/world tick indices. Check the initial `inputtrace: hooks ready` line and the completion summary for event counts, drops, and local `PlayerInput` availability. The trace has not yet been captured in-game; it does not inject inputs or establish deterministic replay. Repeated Free Training Reset Situation states have not been measured.
+## Manual acceptance
 
-For reset discovery, follow the Savestates tab's Advanced / diagnostics workflow:
+1. Launch Sifu normally and enter a playable encounter.
+2. Press F1. Confirm the fullscreen interface appears and gameplay pauses.
+3. Click Resume, pause again, advance one tick, and advance the configured 2–10 ticks. Confirm the interface remains responsive while paused.
+4. Adjust the center speed slider from 0.1× to 2.0× and reset to 1.0×. Close F1 and confirm gameplay resumes only when the GUI owned the pause.
+5. Press `2`, `3`, and `4`; confirm they set 0.8×, 0.5×, and 0.2×, including repeated presses. Confirm the briefly displayed indicator uses the selected value.
+6. Confirm `1` pauses/resumes and `5`/`6` advance one/configured world ticks without activating Sifu's corresponding input actions. In Free Training, check `2` does not also invoke Reset Situation.
+7. Reopen F1, rebind an action to a keyboard key and a mouse button in separate checks, reject a duplicate, and verify F1 cannot be assigned. Verify an unbound key still reaches Sifu.
+8. Disable the speed indicator. Close and reopen the GUI and then restart the game to verify the selection and all settings persist in `SifuTAS.ini`.
+9. Close the GUI and verify mouse movement, camera rotation, and all unbound gameplay input remain normal.
 
-1. Capture baseline.
-2. Arm reset trace and wait until the GUI says it is armed.
-3. Close the GUI, press the configured trace marker (default Ctrl+Alt+F12), then manually activate Free Training's **Reset Situation** command.
-4. Reopen the GUI after capture and compare current state.
+Report the exact mod build identifier, Sifu executable version, and any related `%LOCALAPPDATA%\Sifu\Saved\Logs\SifuCoop.log` lines. Do not commit logs or game files.
 
-For the experimental F8 spawner-rebind path, first save while the player and intended enemy are living, standing, and idle. Fight, manually activate Reset Situation, pause, then load. Rebinding is allowed only if the checkpoint is still in the same world instance and level, the saved enemy had one unique spawner path, that exact spawner resolves to one current active actor of the saved class, and all combat components are initialized. A refused or partial restore is expected if any condition fails. Inspect `tas: checkpoint spawner capture`, `tas: checkpoint load spawner enumeration`, and `tas: checkpoint restore ... binding=original|spawner` lines. This only reapplies existing supported actor fields; AI, orders, timers, animation transitions, and encounter progression remain live. Do not interpret `restored fields=...` as full combat restoration.
+## Deployment safeguards
 
-The trace retains the most recent 512 ProcessEvent calls, up to 1536 detailed calls after the trigger, and bounded aggregates for overflow. It resolves names and writes the records after capture. Check trigger source, marker order, event count, pre-ring overwrites, aggregated counts, untracked overflow, reset begin/return, function paths and caller RVAs in `SifuCoop.log`. Compare player/opponent and lifecycle inventory, transforms, vitals, movement, animation, AI situation actors, and spawners. Three unchanged registry samples mean only a **stable observed inventory**; reset completion and pending callbacks are not verified. Sampling separately reports component availability and reset-hook events. Fighter inventory enumerates up to 256, prioritizes active candidates, samples bounded inactive/pooled actors, and reports truncation. These hooks only observe; they do not initiate reset or restore checkpoint data. Do not install a DLL while Sifu is running.
+For the established Steam test DLL only, standing authorization permits replacement after all of these checks pass:
 
-For safe-state control, verify `MatchState=InProgress` in Free Training and a story/arena encounter. Confirm F1/F2 and speed controls work there, then reach an arena victory/results screen and confirm the guard reports an unsupported match state, releases TAS pause, and restores effective 1.0× speed while preserving the selected preset. Check the main menu and map-loading transitions as well.
+- Sifu is confirmed closed without controlling its process.
+- The installed DLL hash matches a known SifuTAS build. Stop if it is missing or belongs to another mod.
+- A rollback copy is created and its hash matches the installed DLL.
+- The local build hash is verified and the same artifact is installed.
+- `SifuTAS.ini` is preserved.
 
-**Status:** the user reports the GUI, mouse handling, rebinding, configurable slowdown, frame-step increments, settings persistence, GUI scaling, and continuous speed slider work in-game. Free Training checkpoint saving and repeated multi-character restoration are confirmed. In Rain arena, the previous build enumerated 103 `AFightingCharacter` objects but included only seven in checkpoints; skipped actor logs only said “unidentified,” so they did not distinguish overlong paths from other identity failures. The previous test verified camera-cache writes while paused but had no post-resume camera samples, so the camera jump's cause remains unknown. Captures reported `montage=0`, and AI/combat actions continued after load.
+If a condition cannot be verified, do not deploy. Never overwrite another mod's files.
 
-This pass rejects save/load for player death/down/respawn, game-over, seamless travel, and a visible Sifu loading screen when validated; F6 avoids auto-pausing in those states. Arena candidates are filtered by UObject validity, pooled location, health component, and positive health before counting/capturing. It expands identity buffers and classifies truncation/lookup failures. The Steam PDB resolves 33/33 required member offsets, including the player down-state enum, game-over query, loading-screen fields, camera view-target state, and `FMemory::Free`. That engine allocator now releases Unreal's `FString` from `GetPathName`. The compact GUI puts Pause/Resume, Save, Load, and a concise result at the top, with identities, field masks, exclusions, and camera/cloth details in Advanced/Diagnostics. Camera state is sampled at capture, before/after load, and for six frames after resume. The changes await in-game verification.
+## Current verification status
 
-The previous test log measured `OnFrame` averages around 57–91 μs, enemy updates 9–36 μs, puppet updates 40–48 μs, and checkpoint loads around 0.68–0.82 ms. One interval peaked at 4.53 ms in enemy processing. Private bytes rose about 33 MiB across the last two one-minute samples while working set fell about 105 MiB; that short series is not enough to assign lag or memory growth to SifuTAS. These measurements precede the FString cleanup. Montage position is only changed when the same montage remains active; AI/combat actions, movement mode, timers, callbacks, down/death transitions, and saved cloth-particle history remain unsupported.
-
-Multiplicative slowdown appeared to preserve cinematic transitions. An extended diagnostic test did not reproduce the reported acceleration. The stored base dilation moved through Sifu time effects and returned to 1.0; the time-dilation setter logged changes from caller RVA `0x033638F7`, without a monotonic upward drift. At 1×, samples reached about 1.006 world seconds per real second during active progression. Later, `world_time` froze while `real_time` advanced, with `paused=0` and no enemy identified, so that segment is not a valid normal gameplay-speed measurement.
-
-The current diagnostic build logs a `tas: diag` sample about once per second on the game thread. It includes the three stored world dilation fields, original and TAS-scaled effective values, player and nearest active enemy custom dilation, the latest current-world tick delta, world/real time deltas, and world-time-to-wall-time ratios. Native setter change records include caller RVAs and are rate-limited. Do not treat diagnostics as game-tested until this build has run in Sifu.
-
-## Local build record
-
-- 2026-11-04: `build.ps1` completed for the Steam install using its local `Sifu-Win64-Shipping.pdb` and `-LocalBuildName steam`.
-- The generated Steam executable fingerprint is timestamp `0x68409AB0`, image size `0x06295000`; `UWorld_Tick` resolved to a nonzero RVA.
-- The crypto test vectors passed and `build/dsound.dll` was produced (1,223,680 bytes).
-- The game directory had no preexisting `dsound.dll` or `SifuCoop.ini`; only the base game PAK and shipped `CgSDK`/`Wwise` plugin directories were found.
-- The first in-game test, reported by the user, found slowdown, pause and frame advance appeared functional. It also exposed mouse capture/camera sensitivity trouble and slowdown resetting around special attacks. Its log confirmed the inherited D3D overlay and cursor recentring hook were active.
-- 2026-11-04: the first build was installed after approval. The revised build was compiled and installed after preserving the prior DLL as `build/dsound.pre-update.dll`.
-- 2026-11-04: the effective-time-dilation hook and F1–F5 presets built successfully against the same Steam fingerprint; installation was held for backup verification and approval.
-- 2026-11-05: after approval, the multiplicative-time-scale build replaced the prior DLL. Installed SHA-256: `ACD98E654B6ECCE2C64DE13734A48CE896900CE6678F66809595C5FB69E56523`. Prior installed DLL and earlier rollback copy are preserved in `build/`.
-- 2026-11-05: the diagnostic pass resolved the Steam PDB fields and setter RVAs, passed the build script's crypto vectors, and compiled a 1,228,288-byte DLL. It has not been deployed or tested in-game.
-- 2026-11-05: the dedicated TAS GUI/configuration pass rebuilt against the same Steam fingerprint, resolved 16/16 PDB member offsets, passed the crypto test vectors, and compiled a 1,226,752-byte DLL (SHA-256 `168E1CB5A3BEF36AE4A6A2FF69333DB496D8EBD4ED7E49C7A4258C10C9483F5C`). The user later reported GUI, mouse, rebinding, configurable speeds/steps, and persistence working in-game.
-- 2026-11-05: checkpoint v1 rebuilt against the same Steam fingerprint, resolved 16/16 PDB member offsets, passed the crypto test vectors, and compiled a 1,240,576-byte DLL (SHA-256 `66A6626A83063D1DF7A4C674CB3A86CBA9C7354066C0B3432298B6C179AFBD08`). It has not been installed or tested in-game.
-- 2026-11-06: the user installed and tested checkpoint v1 in Free Training. Save was refused by the hardcoded `TrainingRoom` path check, but the old build did not log whether path lookup failed or returned a different path. The current pass removes that filter and adds current-level and enemy-discovery diagnostics; it is not yet installed.
-- 2026-11-06: this follow-up rebuilt against the same Steam fingerprint, resolved 16/16 member offsets, passed the crypto test vectors, and compiled a 1,242,112-byte DLL (SHA-256 `11E80C6DF08682F022D940D9987E2E0DF9AFB88AF66A78199B5CC3A8497FD851`). It has not been installed or tested in-game.
-- 2026-11-06: Free Training runtime logs showed level `/Game/Maps/TU_3/ArenaModeMenu/ArenaMode_Menu`, `tracked=1 active=1 living=0`, and a living player with 96/120 health. Source inspection confirmed the opponent health cache only updates in multiplayer publication. The current pass replaces cached-enemy selection with bounded current-world fighter enumeration and direct combat-component reads.
-- 2026-11-06: the generalized checkpoint build compiled against the Steam PDB, resolved 16/16 member offsets, and passed crypto vectors. DLL size is 1,252,864 bytes; SHA-256 is `9A3AA4A0A0E35BB012D60E261CD87095C48FB1B8C3CBD0AEDB3680E52A5A9741`. It awaits in-game verification.
-- 2026-11-06: commit `60e7869bc68ef6f75c2cda2d74b3572988d2098d` was pushed to `testing`. Under standing authorization, the known installed SifuTAS DLL was replaced after confirming Sifu was closed and verifying its pre-install hash. Installed SHA-256: `9A3AA4A0A0E35BB012D60E261CD87095C48FB1B8C3CBD0AEDB3680E52A5A9741`; rollback copy `build/dsound.pre-60e7869-test.dll` has the previous installed SHA-256 `11E80C6DF08682F022D940D9987E2E0DF9AFB88AF66A78199B5CC3A8497FD851`. In-game checkpoint behavior remains untested.
-- 2026-11-06: the user verified Free Training saves and repeat loads for two characters, and reported a GUI result of `restored 2, partial 0, skipped 0`. The local runtime log contains repeated two- and three-character successful restores, plus one skipped enemy whose UObject identity had changed. Saved health/guard reads were populated. Captured actors showed `montage=0`; no attack order, animation-graph, or pending-action snapshot exists. No camera or cloth reset was present in that build.
-- 2026-11-06: camera/cloth/rebinding/profile build resolved 24/24 Steam-PDB member offsets, including `APlayerController::PlayerCameraManager`, `AController::ControlRotation`, both camera-cache entries, and `FCameraCacheEntry::POV`. Crypto vectors passed. DLL size: 1,265,664 bytes; SHA-256: `5572F064DD3347F058CB53848EFBB14C5E4F74A0246CEA553410AED5B29ACE04`. `git diff --check` passed. The installed DLL still matches the previous known build and awaits replacement after commit/push.
-- 2026-11-09: the user confirmed the installed SHA-256 `5F0915C7E4C071454E1AA73C3F1931D73DA4B35B899D74A722010B1506FE70E2` belongs to the SifuTAS build from commit `6507ecd`. For commit `ab2db36c93425cbd125660b5aed4f1d3f85e2706`, the Steam-PDB build passed crypto vectors and produced `build/dsound.dll` with SHA-256 `8AAF86C8AC1ABE35B48D6676C2C65E016EF2B1DC31D97CB8E9BCCF9D0F52B9C4`. With Sifu confirmed closed, it was installed after creating and verifying rollback `build/dsound.pre-ab2db36-deployment.dll` (SHA-256 `5F0915C7E4C071454E1AA73C3F1931D73DA4B35B899D74A722010B1506FE70E2`). Installed DLL verification matched `8AAF86C8AC1ABE35B48D6676C2C65E016EF2B1DC31D97CB8E9BCCF9D0F52B9C4`. `SifuTAS.ini` was preserved with unchanged SHA-256 `2BD3C87584418B9A2BBFCA9ABFC740B0FB22EB9FBD63AEEB67125DEEC9D91F3F`. No runtime test was performed during deployment.
-
-## Preconditions
-
-- Game installed and closed; Windows; legitimately owned PC copy.
-- Matching `Sifu-Win64-Shipping.exe` and `.pdb` available in game `Binaries\Win64` folder.
-- Python 3 and WinLibs UCRT x64 `g++` accessible in PowerShell.
-- The user's standing authorization covers only the established Steam SifuTAS test DLL. Before each replacement, confirm the installed hash is a known SifuTAS build, Sifu is closed, the rollback copy is hash-verified, and the new build hash matches. Stop for missing/unknown DLLs or any possible conflict with another mod. Preserve user settings. `SifuCoop.ini` has `[net] mode=off` or is absent (upstream defaults to off).
-- Use a short solo training encounter, not a long gameplay save.
-
-## Procedure
-
-1. Run `.\build.ps1 -GameDir "C:\path\to\Sifu\Sifu\Binaries\Win64" -LocalBuildName steam` (or `epic`) **without `-NoGen`**. Confirm the generated offset table contains nonzero `UWorld_Tick` for the current executable and the compiled DLL exists.
-2. Inspect existing mods, verify the known SifuTAS DLL, preserve and verify a rollback backup, and verify the new artifact hash before replacement under the standing authorization. Do not replace an unknown DLL or use conflicting proxy mods.
-3. Start Sifu. Confirm the game renders normally and no critical mod initialization errors appear.
-4. Check that the cursor is hidden and camera rotation has normal sensitivity.
-5. Press **F3**, **F4** and **F5** separately; confirm 0.5×, 0.2× and 0.1×. Press the active preset again to restore 1×, and switch directly between presets.
-6. Use a special attack that previously changed playback speed. Check that Sifu's native slow-motion transition remains smooth and is multiplied by the selected TAS preset.
-7. At each preset, press **F1** to pause, **F2** repeatedly to step, then **F1** to resume. Confirm the selected preset survives pausing and each step advances the same increment.
-8. Test pause and resume after loading a different room; ensure loading transitions cannot wedge the simulation. Re-select a speed preset to return to 1×.
-9. For acceleration diagnostics, run unpaused at 1× for a sustained baseline in the training room, with no speed hotkeys pressed. Compare `world_per_real`, `world_per_wall`, stored dilation components, and `product` versus `original`; retain logs before and after any apparent speed change.
-10. Open the GUI with **F6**. Confirm the Playback, Savestates, Recording, and Settings tabs render, mouse and keyboard work while paused, and the cursor is visible only while the GUI is open. Confirm F6 pauses on open only when gameplay was running; close with F6 and confirm it resumes only if the GUI-owned pause remains unchanged.
-11. Use GUI buttons and shortcuts to pause/resume and advance frames. Set speed through the continuous Playback slider while paused and running, then confirm F3–F5 presets change the same speed value. Change the step count from 1 to 2–10 and verify that many world-tick hook calls run while paused. The displayed engine tick counter is not a verified simulation-frame count.
-12. Rebind actions to unique function keys and Ctrl/Alt/Shift combinations; verify duplicate shortcuts are rejected and valid settings persist across restarts. Confirm F7/F8 remain configurable and invoke checkpoint save/load. Confirm no co-op menu or external overlay appears during ordinary gameplay.
-13. For checkpoint v1, first use Free Training with one standing opponent: pause, save, resume, exchange attacks, pause again, and load. Check per-character transform, velocity, health/max health, guard and dilation outcomes, and that the game remains paused. Repeat the same load to verify the slot remains available. Then separately capture a moving or downed actor to confirm capture is allowed and the GUI/log accurately reports unsupported restore fields. Do not expect AI, montage, attack, timers, or callbacks to rewind.
-14. In Free Training, verify that F6 opens the GUI and pauses only if gameplay was running; F6 close resumes only if automatic opening caused the pause and no manual F1/GUI pause change occurred. Check opening while already paused, manually toggling pause while open, and preserving the selected playback speed.
-15. Drag the Playback continuous speed slider at 1×, 0.01×, 2×, and 4× while running and paused. Confirm F3–F5 presets update the same value. Adjust GUI scale in Settings and confirm text/buttons/window resize without layout overlap; restart and confirm the scale persists.
-16. Test Free Training checkpoint cases: player plus one enemy, player-only after the opponent is absent, and multiple discoverable opponents. Confirm the reported discovered/captured counts, including any capacity or enumeration warning. If save fails, record `tas: checkpoint save rejected level=...` and the detailed `save refused` reason. Capture and restore are separate: moving/downed actors can be captured, but their pose/vitals may be reported unsupported during load. Then test one simple story/arena encounter and confirm no map-name restriction; never load across worlds or levels.
-17. While paused, restore twice and confirm camera framing updates immediately. Check camera rotation and position in the paused render; after resume observe whether the camera rig converges normally or snaps due to unsaved spring-arm lag state.
-18. Teleport player and enemies repeatedly; after resume check scarves and other simulated cloth. Logs should report `cloth_reset=queued` per teleported actor. This only resets on the next cloth update and does not restore the original particle pose.
-19. Rebind Pause and GUI actions to keys that previously triggered actions. Verify no action occurs during capture, on the captured press, or until its physical release; duplicate rejection should consume the same keypress too. Rebind modifiers and test the normal binding afterward.
-20. Keep Sifu running for several minutes and review `tas: perf` (five-second OnFrame averages/maxima), `tas: perf ui_open` (five-second GUI rendering average/max while open), `tas: checkpoint perf` (save/load latency), and `tas: memory` (once-per-minute working set/private bytes). Repeated save/load should not grow checkpoint history; compare memory samples with and without a loaded checkpoint. Treat these as measurements of this instrumented build, not proof that SifuTAS caused any lag.
-21. Save during an attack animation and inspect `fields`, `montage`, and the restore masks. Only a still-active identical montage can have its playhead repositioned. Confirm no extra hit/damage occurs and record whether the gameplay order still persists. Then test health and structure in one story/arena encounter with multiple enemies. Do not expect doors, weapons, destructibles, scripted triggers, or newly spawned actors to be restored.
-22. In normal active play, open F6 and confirm it pauses; close it and confirm only the GUI-owned pause is resumed. During a death/down transition, open F6 and verify it does not pause the game. Confirm F6 still closes the GUI and the death UI remains usable.
-23. Attempt F7/F8 during player death, downing/death transitions, and the game-over screen. Confirm a concise refusal and that load leaves player/world state and the death/respawn flow untouched. Unsupported state-query failures should be refused.
-24. In Rain arena, save during an encounter. Compare raw world actors, active candidates, and captured count. Verify pooled, invalid, health-less, inactive, truncated/unavailable identities, and capacity skips are separately counted. Confirm long paths are intact and the user-visible opponent is included without relying on the offline enemy health cache.
-25. Load while paused, inspect `tas: checkpoint camera stage=before_load` and `after_load`, resume, and inspect `postresume_1` through `postresume_6`. Compare view target, target POV, target offset, manager transform component, controller rotation, and current/previous caches. If the view jumps, collect camera rig and pending-input measurements before changing camera state.
-26. Repeat saves/loads over a longer session and compare once-per-minute `tas: memory` samples after FString cleanup. Compare private bytes and working set independently; neither is solely attributable to SifuTAS. Checkpoint history remains one fixed snapshot.
-
-## Logs
-
-`%LOCALAPPDATA%\Sifu\Saved\Logs\SifuCoop.log` (upstream logger path; may vary if the game installation redirects user data).
-
-Diagnostic strings:
-- `tas: world tick hooked`: hook installed, not proof of correct behavior.
-- `tas: UWorld::Tick symbol missing`: offset unavailable; F1/F2 won't operate.
-- `tas: world tick hook failed`: MinHook installation failed.
-- `tas: effective time dilation hook failed`: MinHook installation failed.
-- `tas: diag timestamp=...`: full one-second diagnostic sample; at a 1× baseline, `product`, `original`, and `effective` should match, and world-time ratios should be near 1.0 during unpaused play.
-- `tas: setter=TimeDilation ... caller_rva=...`: native base-dilation setter changed the stored value.
-- `tas: setter=DemoPlayTimeDilation ... caller_rva=...`: replay-system demo dilation setter received a changed value. Matinee dilation is sampled directly because no matching setter symbol was found in this PDB.
-- `tas: step N`: one hooked world-tick invocation occurred, not proof of a complete simulation step.
-- `tas: perf interval_ms=...`: QPC averages/maxima for OnFrame and major sub-systems.
-- `tas: checkpoint perf operation=...`: elapsed save/load time.
-- `tas: memory working_set_kb=... private_kb=...`: process memory sample, not attributed solely to SifuTAS.
-- `tas: checkpoint camera restore=verified|failed`: manager cache and control-rotation readback.
-- `tas: checkpoint camera stage=capture|before_load|after_load|postresume_N`: caches, controller rotation, view target/POV, target offset, and transform component where readable.
-- `tas: checkpoint restore actor[...] cloth_reset=queued|unavailable`: reset request to apply on a later skeletal-mesh cloth update.
-- `tas: checkpoint saved ... world_actors=... pooled=... identity_truncated=... capacity_skipped=...`: raw and filtered actor counts.
-- `tas: checkpoint load refused: ...`: death/down/game-over/seamless-travel or unvalidated player state refused before mutation.
-- `tas: reset trace event=...`: an Unreal actor/game-mode reset or Sifu map-restart function was observed; this does not prove the full encounter was reinitialized.
-
-Report: storefront, executable build fingerprint, exact build command, compiler errors (if any), log excerpt, key behavior, crash/hang details. Do not upload game executable, PDB or other proprietary data.
-
-## Release gate (future)
-
-No public release until clean Windows build, install/uninstall/backup, observed working controls, collision handling, and documentation are verified. Deterministic replay/savestates are additional milestones, not Phase 1 claims.
+The time-dilation, world-tick, and GUI approaches are based on previously tested SifuTAS infrastructure. The redesigned fullscreen layout, versioned 1–9 bindings, local input suppression, speed indicator, and updated pause ownership need a fresh manual in-game pass. No feature should be described as verified from compilation alone.
