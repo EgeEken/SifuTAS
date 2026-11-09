@@ -14,6 +14,7 @@
 #include "../core/log.h"
 #include "../tas/controls.h"
 #include "overlay.h"
+#include "scale.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -40,6 +41,7 @@ std::atomic<bool> g_ignore_mouse_until_release{false};
 std::atomic<int> g_capture_result{0};
 ImGuiStyle g_base_style = {};
 std::atomic<float> g_dpi_scale{1.f};
+float g_ui_scale = 1.f;
 
 LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -161,8 +163,7 @@ void DrawKeybinds(float width) {
         char label[48] = {};
         if (g_capture_slot == slot) strcpy_s(label, "Press a key...");
         else if (!tas::BindingText(settings.bindings[slot], label, sizeof(label))) strcpy_s(label, "Key");
-        const float scale = fminf(1.1f, fminf(g_dpi_scale.load(std::memory_order_relaxed),
-            fminf(ImGui::GetIO().DisplaySize.x / 1600.f, ImGui::GetIO().DisplaySize.y / 820.f)));
+        const float scale = g_ui_scale;
         const float key_width = (width < 360.f ? 88.f : 118.f) * scale;
         if (ImGui::Button(label, ImVec2(key_width, 33.f * scale))) {
             g_capture_slot = slot;
@@ -211,7 +212,7 @@ void DrawKeybinds(float width) {
 void DrawMenu() {
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 screen = io.DisplaySize;
-    const float scale = fminf(1.1f, fminf(g_dpi_scale.load(std::memory_order_relaxed), fminf(screen.x / 1600.f, screen.y / 820.f)));
+    const float scale = g_ui_scale;
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
     ImGui::SetNextWindowSize(screen);
     ImGui::SetNextWindowBgAlpha(0.f);
@@ -316,20 +317,28 @@ HRESULT __stdcall PresentHook(IDXGISwapChain* chain, UINT interval, UINT flags) 
     }
     if (chain == g_chain && g_ready) {
         if (!g_target && !CreateTarget(chain)) return g_present(chain, interval, flags);
-        const float scale = g_open.load(std::memory_order_relaxed)
-            ? fminf(1.1f, fminf(g_dpi_scale.load(std::memory_order_relaxed),
-                fminf(ImGui::GetIO().DisplaySize.x / 1600.f, ImGui::GetIO().DisplaySize.y / 820.f))) : 1.f;
-        ImGui::GetStyle() = g_base_style;
-        ImGui::GetStyle().ScaleAllSizes(scale);
-        ImGui::GetIO().FontGlobalScale = 1.4f * scale;
-        if (g_open.load(std::memory_order_relaxed) || GetTickCount64() < hooks::SpeedIndicatorUntil()) {
-            ImGui_ImplDX11_NewFrame(); ImGui_ImplWin32_NewFrame();
-            if (g_open.load(std::memory_order_relaxed)) FeedMouse();
-            if (GetForegroundWindow() == g_window && g_open.load(std::memory_order_relaxed))
-                ImGui::GetIO().MouseDrawCursor = true;
-            else ImGui::GetIO().MouseDrawCursor = false;
+        const bool open = g_open.load(std::memory_order_relaxed);
+        if (open || GetTickCount64() < hooks::SpeedIndicatorUntil()) {
+            ImGui_ImplDX11_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGuiIO& io = ImGui::GetIO();
+            if (!std::isfinite(io.DisplaySize.x) || !std::isfinite(io.DisplaySize.y) ||
+                io.DisplaySize.x <= 0.f || io.DisplaySize.y <= 0.f)
+                return g_present(chain, interval, flags);
+
+            const float viewport_scale = UiScaleForViewport(io.DisplaySize.x, io.DisplaySize.y,
+                g_dpi_scale.load(std::memory_order_relaxed));
+            if (!std::isfinite(viewport_scale) || viewport_scale <= 0.f)
+                return g_present(chain, interval, flags);
+            g_ui_scale = open ? viewport_scale : 1.f;
+            ImGui::GetStyle() = g_base_style;
+            ImGui::GetStyle().ScaleAllSizes(g_ui_scale);
+            io.FontGlobalScale = 1.4f * g_ui_scale;
+            if (open) FeedMouse();
+            if (GetForegroundWindow() == g_window && open) io.MouseDrawCursor = true;
+            else io.MouseDrawCursor = false;
             ImGui::NewFrame();
-            if (g_open.load(std::memory_order_relaxed)) DrawMenu(); else DrawIndicator();
+            if (open) DrawMenu(); else DrawIndicator();
             ImGui::Render(); g_context->OMSetRenderTargets(1, &g_target, nullptr);
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         }
