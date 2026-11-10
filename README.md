@@ -1,6 +1,7 @@
 # SifuTAS
+A TAS tool for Sifu
 
-## V1.0 - A speed control tool for Sifu
+## V1.0 - Speed Controls
 ### Allowing you to pause, continue frame by frame, speed up or slow down the game.
 
 
