@@ -1,6 +1,6 @@
 # Local SifuTAS development workflow
 
-Use Codex on the Windows computer with the installed Sifu files and matching PDB. The active project scope is a dedicated time-control utility: speed from 0.1× to 2.0×, six configurable speed presets, pause, world-tick stepping, a fullscreen ImGui interface, configurable keyboard/mouse bindings, and an optional speed indicator. Do not resume savestates, deterministic replay, recording, or multiplayer work.
+Use Codex on the Windows computer with the installed Sifu files and matching PDB. The active project scope is a dedicated time-control utility: speed from 0.1× to 2.0×, five configurable speed presets, pause, world-tick stepping, a compact fullscreen ImGui interface, configurable keyboard/mouse bindings, and an optional persistent speed indicator. Do not resume savestates, deterministic replay, recording, or multiplayer work.
 
 Before editing, read `AGENTS.md`, `README.md`, and `docs/TESTING.md`. Preserve local changes. Work only on `testing`; never modify `main` without explicit authorization.
 

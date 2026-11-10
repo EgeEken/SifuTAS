@@ -33,7 +33,6 @@ std::atomic<bool> g_paused{false};
 std::atomic<bool> g_step_in_progress{false};
 std::atomic<int> g_steps{0};
 std::atomic<unsigned long long> g_engine_ticks{0};
-std::atomic<ULONGLONG> g_indicator_until{0};
 std::atomic<float> g_last_delta{1.f / 60.f};
 bool g_gui_owns_pause = false;
 unsigned long long g_pause_serial = 0;
@@ -83,7 +82,6 @@ void SetSpeedInternal(float speed) {
     const float value = static_cast<float>(step) / 10.f;
     const float previous = g_speed.exchange(value, std::memory_order_relaxed);
     if (std::fabs(previous - value) > 0.001f) {
-        g_indicator_until.store(GetTickCount64() + 1800, std::memory_order_relaxed);
         SC_LOG("time-control: speed %.1fx", value);
     }
 }
@@ -140,10 +138,10 @@ void __fastcall WorldTickHook(void* self, int tick_type, float delta_seconds) {
 }
 
 void ActivateConfiguredSlot(int slot) {
-    if (slot < 0 || slot >= 9 || !g_supported.load(std::memory_order_relaxed)) return;
+    if (slot < 0 || slot >= tas::layout::kSlotCount || !g_supported.load(std::memory_order_relaxed)) return;
     switch (tas::GetSlotKind(slot)) {
         case tas::SlotKind::Pause: TogglePause(); break;
-        case tas::SlotKind::Speed: SetSpeedInternal(tas::SpeedForPreset(tas::PresetIndexForSlot(slot))); break;
+        case tas::SlotKind::Speed: ActivateSpeedPreset(tas::PresetIndexForSlot(slot)); break;
         case tas::SlotKind::FrameOne: AdvanceFrames(1); break;
         case tas::SlotKind::FrameMany: AdvanceFrames(tas::GetSettings().frames_per_step); break;
     }
@@ -158,10 +156,10 @@ void __fastcall EngineTickHook(void* self, float delta_seconds, bool idle_mode) 
     tas::SetInputSuppressionState(focused, g_supported.load(std::memory_order_relaxed));
     if (tas::WasGuiTogglePressed(focused && !ui::IsBindingCaptureActive())) OpenOrCloseGui();
     if (focused && !ui::IsMenuOpen()) {
-        for (int slot = 0; slot < 9; ++slot)
+        for (int slot = 0; slot < tas::layout::kSlotCount; ++slot)
             if (tas::WasSlotPressed(slot, true)) ActivateConfiguredSlot(slot);
     } else {
-        for (int slot = 0; slot < 9; ++slot) tas::WasSlotPressed(slot, false);
+        for (int slot = 0; slot < tas::layout::kSlotCount; ++slot) tas::WasSlotPressed(slot, false);
     }
     g_engine_tick(self, delta_seconds, idle_mode);
     g_engine_ticks.fetch_add(1, std::memory_order_relaxed);
@@ -261,9 +259,14 @@ void ActivateSlot(int slot) { ActivateConfiguredSlot(slot); }
 void ToggleGui() { OpenOrCloseGui(); }
 void SetPaused(bool paused) { if (g_paused.load(std::memory_order_relaxed) != paused) TogglePause(); }
 void SetPlaybackSpeed(float speed) { SetSpeedInternal(speed); }
+void ActivateSpeedPreset(int preset) {
+    if (!g_supported.load(std::memory_order_relaxed)) return;
+    const int preset_step = tas::SpeedStep(tas::SpeedForPreset(preset));
+    const int current_step = tas::SpeedStep(g_speed.load(std::memory_order_relaxed));
+    SetSpeedInternal(static_cast<float>(tas::layout::StepAfterPresetActivation(current_step, preset_step)) / 10.f);
+}
 float PlaybackSpeed() { return g_speed.load(std::memory_order_relaxed); }
 bool IsPaused() { return g_paused.load(std::memory_order_relaxed); }
 bool IsGameplaySupported() { return g_supported.load(std::memory_order_relaxed); }
-ULONGLONG SpeedIndicatorUntil() { return g_indicator_until.load(std::memory_order_relaxed); }
 
 }

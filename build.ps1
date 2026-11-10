@@ -54,7 +54,7 @@ if (-not $NoGen) {
 
 
 
-Write-Host "[2/4] verifying crypto against published test vectors..." -ForegroundColor Cyan
+Write-Host "[2/5] verifying crypto against published test vectors..." -ForegroundColor Cyan
 $cryptoTest = Join-Path $OutDir "cryptotest.exe"
 cmd /c "g++ -O2 -std=c++17 -static -Wall -Wextra -o `"$cryptoTest`" `"$(Join-Path $Root 'tools\cryptotest\cryptotest.cpp')`" `"$(Join-Path $Root 'src\net\crypto.cpp')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { throw "cryptotest failed to compile" }
@@ -65,7 +65,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host ($vectorOutput | Select-Object -Last 1) -ForegroundColor Green
 
-Write-Host "[3/4] checking overlay scale edge cases..." -ForegroundColor Cyan
+Write-Host "[3/5] checking control defaults and preset behavior..." -ForegroundColor Cyan
+$controlTest = Join-Path $OutDir "control_layout_test.exe"
+cmd /c "g++ -O2 -std=c++17 -static -Wall -Wextra -o `"$controlTest`" `"$(Join-Path $Root 'tools\control_layout_test.cpp')`" 2>&1"
+if ($LASTEXITCODE -ne 0) { throw "control_layout_test failed to compile" }
+cmd /c "`"$controlTest`" 2>&1"
+if ($LASTEXITCODE -ne 0) { throw "control layout test failed" }
+Write-Host "control defaults and preset behavior passed" -ForegroundColor Green
+
+Write-Host "[4/5] checking overlay scale edge cases..." -ForegroundColor Cyan
 $scaleTest = Join-Path $OutDir "ui_scale_test.exe"
 cmd /c "g++ -O2 -std=c++17 -static -Wall -Wextra -o `"$scaleTest`" `"$(Join-Path $Root 'tools\ui_scale_test.cpp')`" 2>&1"
 if ($LASTEXITCODE -ne 0) { throw "ui_scale_test failed to compile" }
@@ -73,7 +81,7 @@ cmd /c "`"$scaleTest`" 2>&1"
 if ($LASTEXITCODE -ne 0) { throw "overlay scale edge-case test failed" }
 Write-Host "overlay scale edge cases passed" -ForegroundColor Green
 
-Write-Host "[4/4] compiling dsound.dll..." -ForegroundColor Cyan
+Write-Host "[5/5] compiling dsound.dll..." -ForegroundColor Cyan
 
 $sources = @(
     "src\dllmain.cpp"

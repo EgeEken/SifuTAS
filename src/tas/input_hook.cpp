@@ -62,7 +62,7 @@ bool __fastcall InputKeyHook(void* self, FKey key, std::uint32_t event, float am
         suppress = IsGuiToggleInput(static_cast<int>(key.comparison_index));
         if (g_gameplay_supported.load(std::memory_order_relaxed)) {
             const Settings settings = GetSettings();
-            for (int i = 0; i < 9; ++i) {
+            for (int i = 0; i < tas::layout::kSlotCount; ++i) {
                 if (settings.bindings[i].key &&
                     IsInputBinding(static_cast<int>(key.comparison_index), i) &&
                     CurrentModifiers() == settings.bindings[i].modifiers) {

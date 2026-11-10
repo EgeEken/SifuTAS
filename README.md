@@ -12,13 +12,13 @@ F1 opens and closes the fixed fullscreen SifuTAS interface. Opening it pauses ac
 | --- | --- | --- | --- |
 | 1 | `1` | Pause / resume | — |
 | 2 | `2` | Speed preset | 0.8× |
-| 3 | `3` | Speed preset | 0.5× |
-| 4 | `4` | Speed preset | 0.2× |
-| 5 | `5` | Advance one world tick | — |
-| 6 | `6` | Advance configured number of world ticks | 5 |
-| 7–9 | Unbound | Additional speed presets | 1.0× each |
+| 3 | `4` | Speed preset | 0.5× |
+| 4 | `5` | Speed preset | 0.2× |
+| 5 | `6` | Advance one world tick | — |
+| 6 | `7` | Advance configured number of world ticks | 5 |
+| 7–8 | Unbound | Additional speed presets | 1.0× each |
 
-The GUI has pause, one-tick and multi-tick controls, a 0.1×–2.0× speed slider in 0.1 increments, nine rebindable action slots, six editable speed presets, and a speed indicator that briefly appears after speed changes. Presets set the shared selected speed; pressing one repeatedly does not toggle back to 1.0×. F1 is reserved.
+The fullscreen GUI uses compact centered panels over a dimmed game view. It has pause, one-tick and multi-tick controls, a 0.1×–2.0× speed slider in 0.1 increments, eight rebindable action slots, five editable speed presets, and an optional persistent speed indicator. Activating a preset sets its speed; activating the same preset again returns to 1.0×. F1 is reserved.
 
 Bindings support ordinary keyboard keys, function/navigation/numpad keys, mouse buttons 1–5, and Ctrl/Alt/Shift combinations. Exact duplicate combinations are rejected. The `APlayerController::InputKey` hook suppresses assigned local-player actions while leaving unmatched events alone. While the GUI is open, local-player key/button events are suppressed and ImGui receives window input. Mouse movement is not hooked while the GUI is closed. These paths require manual in-game verification on the target Sifu build.
 
@@ -28,7 +28,7 @@ Controls are guarded by world, player, match, death/game-over, loading, front-en
 
 ## Configuration
 
-`SifuTAS.ini` is stored beside `dsound.dll`. Version 1 settings use a separate `[time_control]` section and save nine bindings, six speed presets, the multi-step count, and indicator visibility. Existing files are preserved: old `[tas]`, `[net]`, and unrelated sections are left in place; legacy binding indices are ignored and current defaults are applied. Invalid or duplicate version 1 bindings fall back to defaults. The example file is [SifuTAS.ini.example](SifuTAS.ini.example).
+`SifuTAS.ini` is stored beside `dsound.dll`. Version 2 settings use a separate `[time_control]` section and save eight bindings, five speed presets, the multi-step count, and indicator visibility. Existing files are preserved: old `[tas]`, `[net]`, and unrelated sections are left in place. Version 1 action indices are ignored; the new defaults are applied to avoid changing the meaning of existing bindings. Invalid or duplicate bindings fall back to defaults. The example file is [SifuTAS.ini.example](SifuTAS.ini.example).
 
 ## Build
 

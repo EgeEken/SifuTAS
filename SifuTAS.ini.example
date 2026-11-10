@@ -1,22 +1,20 @@
 [time_control]
-version=1
+version=2
 ; Values are Windows virtual-key codes plus modifier mask: Ctrl=1, Alt=2, Shift=4.
-; Slots 1-6 default to the number keys 1-6; slots 7-9 are unbound.
+; Slots 1-6 default to 1, 2, 4, 5, 6, 7; slots 7-8 are unbound.
 slot_1=49,0
 slot_2=50,0
-slot_3=51,0
-slot_4=52,0
-slot_5=53,0
-slot_6=54,0
+slot_3=52,0
+slot_4=53,0
+slot_5=54,0
+slot_6=55,0
 slot_7=0,0
 slot_8=0,0
-slot_9=0,0
 ; Preset speed is an integer from 1 to 20, representing tenths of a multiplier.
 preset_1=8
 preset_2=5
 preset_3=2
 preset_4=10
 preset_5=10
-preset_6=10
 frames_per_step=5
 show_speed_indicator=1

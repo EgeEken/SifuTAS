@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cfloat>
 
 #include "../../third_party/imgui/backends/imgui_impl_dx11.h"
 #include "../../third_party/imgui/backends/imgui_impl_win32.h"
@@ -55,7 +56,7 @@ unsigned int Modifiers() {
 
 bool CaptureBinding(int vk) {
     const int slot = g_capture_slot;
-    if (slot < 0 || slot >= 9) return false;
+    if (slot < 0 || slot >= tas::layout::kSlotCount) return false;
     g_capture_slot = -1;
     const bool accepted = tas::SetBinding(slot, {vk, Modifiers()});
     g_capture_result.store(accepted ? 1 : (vk == VK_F1 ? 3 : 2), std::memory_order_relaxed);
@@ -133,13 +134,16 @@ bool Initialise(IDXGISwapChain* chain) {
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 0.f;
-    style.ChildRounding = 8.f;
-    style.FrameRounding = 5.f;
-    style.GrabRounding = 5.f;
+    style.WindowPadding = ImVec2(18.f, 16.f);
+    style.ChildRounding = 12.f;
+    style.FrameRounding = 8.f;
+    style.GrabRounding = 8.f;
+    style.FramePadding = ImVec2(12.f, 10.f);
+    style.ItemSpacing = ImVec2(10.f, 10.f);
     style.WindowBorderSize = 0.f;
     style.ChildBorderSize = 1.f;
     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.03f, 0.04f, 0.06f, 0.70f);
-    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.055f, 0.065f, 0.085f, 0.84f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.035f, 0.045f, 0.065f, 0.88f);
     style.Colors[ImGuiCol_Border] = ImVec4(0.20f, 0.25f, 0.31f, 0.72f);
     style.Colors[ImGuiCol_Button] = ImVec4(0.12f, 0.17f, 0.23f, 0.95f);
     style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.20f, 0.35f, 0.48f, 1.f);
@@ -154,18 +158,21 @@ bool Initialise(IDXGISwapChain* chain) {
     return g_old_proc != nullptr;
 }
 
-void DrawKeybinds(float width) {
+void DrawKeybinds(float scale) {
     const auto settings = tas::GetSettings();
-    ImGui::Text("Keybinds");
+    const float width = ImGui::GetContentRegionAvail().x;
+    const char* heading = "Keybinds";
+    ImGui::SetCursorPosX((width - ImGui::CalcTextSize(heading).x) * .5f);
+    ImGui::TextUnformatted(heading);
     ImGui::Spacing();
-    for (int slot = 0; slot < 9; ++slot) {
+    for (int slot = 0; slot < tas::layout::kSlotCount; ++slot) {
         ImGui::PushID(slot);
         char label[48] = {};
         if (g_capture_slot == slot) strcpy_s(label, "Press a key...");
         else if (!tas::BindingText(settings.bindings[slot], label, sizeof(label))) strcpy_s(label, "Key");
-        const float scale = g_ui_scale;
-        const float key_width = (width < 360.f ? 88.f : 118.f) * scale;
-        if (ImGui::Button(label, ImVec2(key_width, 33.f * scale))) {
+        const float key_width = fmaxf(78.f * scale, ImGui::CalcTextSize(label).x + 18.f * scale);
+        const float button_height = 42.f * scale;
+        if (ImGui::Button(label, ImVec2(key_width, button_height))) {
             g_capture_slot = slot;
             const bool ignore_click = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
             g_ignore_capture_click.store(ignore_click, std::memory_order_relaxed);
@@ -174,31 +181,32 @@ void DrawKeybinds(float width) {
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to rebind; Escape cancels");
         ImGui::SameLine();
-        if (ImGui::SmallButton("×")) {
+        if (ImGui::Button("×", ImVec2(30.f * scale, button_height))) {
             if (tas::SetBinding(slot, {0, 0})) g_capture_result.store(1);
             else g_capture_result.store(2);
         }
         ImGui::SameLine();
-        ImGui::BeginGroup();
-        ImGui::TextUnformatted(tas::SlotActionText(slot));
         const int preset = tas::PresetIndexForSlot(slot);
         if (preset >= 0) {
             int step = settings.preset_steps[preset];
-            const float slider_width = (width - key_width - 75.f * scale) > 100.f * scale
-                ? width - key_width - 75.f * scale : 100.f * scale;
+            const float apply_width = 78.f * scale;
+            const float slider_width = fmaxf(46.f * scale,
+                ImGui::GetContentRegionAvail().x - apply_width - ImGui::GetStyle().ItemSpacing.x);
             ImGui::SetNextItemWidth(slider_width);
             char slider_label[32] = {};
             _snprintf_s(slider_label, sizeof(slider_label), _TRUNCATE, "##preset%d", preset);
-            if (ImGui::SliderInt(slider_label, &step, 1, 20, "%d")) tas::SetPresetStep(preset, step);
+            if (ImGui::SliderInt(slider_label, &step, 1, 20, "")) tas::SetPresetStep(preset, step);
             if (ImGui::IsItemDeactivatedAfterEdit()) tas::SaveSettings();
             ImGui::SameLine();
             char apply[24] = {};
-            _snprintf_s(apply, sizeof(apply), _TRUNCATE, "%.1f× Apply##apply%d", step / 10.f, preset);
-            if (ImGui::SmallButton(apply)) hooks::SetPlaybackSpeed(step / 10.f);
+            _snprintf_s(apply, sizeof(apply), _TRUNCATE, "%.1f×##apply%d", step / 10.f, preset);
+            if (ImGui::Button(apply, ImVec2(apply_width, button_height))) hooks::ActivateSpeedPreset(preset);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Apply preset; clicking it again returns to 1.0×");
+        } else {
+            ImGui::TextUnformatted(tas::SlotActionText(slot));
         }
-        ImGui::EndGroup();
         ImGui::PopID();
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(1.f, 3.f * scale));
     }
     bool show = settings.show_speed_indicator;
     if (ImGui::Checkbox("Show speed indicator", &show)) tas::SetShowSpeedIndicator(show);
@@ -220,66 +228,90 @@ void DrawMenu() {
         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
     ImGui::Begin("##SifuTASFullscreen", nullptr, flags);
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilled(ImVec2(0, 0), screen, IM_COL32(4, 7, 12, 115));
-    const float outer = 36.f * scale;
-    const float width = (screen.x - outer * 2.f - 32.f * scale) / 3.f;
-    const float height = screen.y - outer * 2.f;
-    ImGui::SetCursorPos(ImVec2(outer, outer));
-    if (ImGui::BeginChild("##pause", ImVec2(width, height), ImGuiChildFlags_Border)) {
-        const float button_h = 58.f * scale;
-        ImGui::SetCursorPosY(height * .25f);
-        ImGui::SetNextItemWidth(-1.f);
-        if (ImGui::Button(hooks::IsPaused() ? ">  Resume" : "||  Pause", ImVec2(-1.f, button_h)))
+    draw->AddRectFilled(ImVec2(0, 0), screen, IM_COL32(4, 7, 12, 88));
+    const float gap = 18.f * scale;
+    const float left_width = 340.f * scale;
+    const float center_width = 380.f * scale;
+    const float right_width = 570.f * scale;
+    const float left_height = 300.f * scale;
+    const float center_height = 320.f * scale;
+    const float right_height = 520.f * scale;
+    const float total_width = left_width + center_width + right_width + gap * 2.f;
+    const float start_x = (screen.x - total_width) * .5f;
+
+    ImGui::SetCursorPos(ImVec2(start_x, (screen.y - left_height) * .5f));
+    if (ImGui::BeginChild("##pause", ImVec2(left_width, left_height), ImGuiChildFlags_Border)) {
+        const float button_h = 50.f * scale;
+        const float button_w = ImGui::GetContentRegionAvail().x;
+        if (ImGui::Button(hooks::IsPaused() ? ">   Resume" : "||   Pause", ImVec2(button_w, button_h)))
             hooks::SetPaused(!hooks::IsPaused());
         ImGui::Spacing();
         ImGui::BeginDisabled(!hooks::IsPaused());
-        if (ImGui::Button(">  Advance 1 Frame", ImVec2(-1.f, button_h))) hooks::AdvanceFrames(1);
+        if (ImGui::Button(">   Advance 1 Frame", ImVec2(button_w, button_h))) hooks::AdvanceFrames(1);
         ImGui::Spacing();
         const int frames = tas::GetSettings().frames_per_step;
         char label[48] = {};
-        _snprintf_s(label, sizeof(label), _TRUNCATE, ">>  Advance %d Frames", frames);
-        if (ImGui::Button(label, ImVec2(-1.f, button_h))) hooks::AdvanceFrames(frames);
+        _snprintf_s(label, sizeof(label), _TRUNCATE, ">>   Advance %d Frames", frames);
+        if (ImGui::Button(label, ImVec2(button_w, button_h))) hooks::AdvanceFrames(frames);
         ImGui::EndDisabled();
+        ImGui::Spacing();
         int next_frames = frames;
-        ImGui::SetNextItemWidth(-1.f);
-        if (ImGui::SliderInt("##multiFrameStep", &next_frames, 2, 10, "Step count: %d")) tas::SetFramesPerStep(next_frames);
+        ImGui::SetNextItemWidth(button_w);
+        if (ImGui::SliderInt("##multiFrameStep", &next_frames, 2, 10, "%d frames")) tas::SetFramesPerStep(next_frames);
         if (ImGui::IsItemDeactivatedAfterEdit()) tas::SaveSettings();
     }
     ImGui::EndChild();
-    ImGui::SameLine(0.f, 16.f * scale);
-    if (ImGui::BeginChild("##speed", ImVec2(width, height), ImGuiChildFlags_Border)) {
-        ImGui::Text("Game Speed");
+
+    ImGui::SetCursorPos(ImVec2(start_x + left_width + gap, (screen.y - center_height) * .5f));
+    if (ImGui::BeginChild("##speed", ImVec2(center_width, center_height), ImGuiChildFlags_Border)) {
+        const float width = ImGui::GetContentRegionAvail().x;
+        const char* heading = "Game Speed";
+        ImGui::SetCursorPosX((width - ImGui::CalcTextSize(heading).x) * .5f);
+        ImGui::TextUnformatted(heading);
         ImGui::Spacing();
         ImGui::BeginDisabled(!hooks::IsGameplaySupported());
         int step = tas::SpeedStep(hooks::PlaybackSpeed());
-        ImGui::SetCursorPosY(height * .34f);
-        ImGui::SetNextItemWidth(-1.f);
-        if (ImGui::SliderInt("##speedSlider", &step, 1, 20, "%d")) hooks::SetPlaybackSpeed(step / 10.f);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4.f);
-        ImGui::Text("%.1f×", hooks::PlaybackSpeed());
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 24.f * scale);
+        ImGui::SetNextItemWidth(width);
+        if (ImGui::SliderInt("##speedSlider", &step, 1, 20, "")) hooks::SetPlaybackSpeed(step / 10.f);
+        char speed_text[16] = {};
+        _snprintf_s(speed_text, sizeof(speed_text), _TRUNCATE, "%.1f×", hooks::PlaybackSpeed());
+        ImFont* font = ImGui::GetFont();
+        const float font_size = ImGui::GetFontSize() * 1.55f;
+        const ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.f, speed_text);
+        ImGui::SetCursorPosX((width - text_size.x) * .5f);
+        ImGui::GetWindowDrawList()->AddText(font, font_size, ImGui::GetCursorScreenPos(),
+            IM_COL32(106, 205, 255, 255), speed_text);
+        ImGui::Dummy(ImVec2(text_size.x, text_size.y + 20.f * scale));
         ImGui::Spacing();
-        const float button_width = 220.f * scale < width - 32.f * scale ? 220.f * scale : width - 32.f * scale;
-        if (ImGui::Button("Reset to 1.0×", ImVec2(button_width, 42.f * scale))) hooks::SetPlaybackSpeed(1.f);
+        const float button_width = fminf(220.f * scale, width);
+        ImGui::SetCursorPosX((width - button_width) * .5f);
+        if (ImGui::Button("Reset to 1.0×", ImVec2(button_width, 44.f * scale))) hooks::SetPlaybackSpeed(1.f);
         ImGui::EndDisabled();
         if (!hooks::IsGameplaySupported()) ImGui::TextDisabled("Available during active gameplay.");
     }
     ImGui::EndChild();
-    ImGui::SameLine(0.f, 16.f * scale);
-    if (ImGui::BeginChild("##keybinds", ImVec2(width, height), ImGuiChildFlags_Border)) DrawKeybinds(width - 32.f * scale);
+
+    ImGui::SetCursorPos(ImVec2(start_x + left_width + gap + center_width + gap,
+        (screen.y - right_height) * .5f));
+    if (ImGui::BeginChild("##keybinds", ImVec2(right_width, right_height), ImGuiChildFlags_Border))
+        DrawKeybinds(scale);
     ImGui::EndChild();
     ImGui::End();
 }
 
 void DrawIndicator() {
     const auto settings = tas::GetSettings();
-    if (!settings.show_speed_indicator || GetTickCount64() >= hooks::SpeedIndicatorUntil()) return;
+    if (!settings.show_speed_indicator) return;
     const ImVec2 screen = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(screen.x - 32.f, 28.f), ImGuiCond_Always, ImVec2(1.f, 0.f));
-    ImGui::SetNextWindowBgAlpha(.45f);
+    ImGui::SetNextWindowPos(ImVec2(screen.x - 24.f, 20.f), ImGuiCond_Always, ImVec2(1.f, 0.f));
+    ImGui::SetNextWindowBgAlpha(.62f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 6.f));
     ImGui::Begin("##speedIndicator", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                  ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings);
     ImGui::Text("%.1f×", hooks::PlaybackSpeed());
     ImGui::End();
+    ImGui::PopStyleVar();
 }
 
 bool FindPresent(void** resize) {
@@ -318,7 +350,8 @@ HRESULT __stdcall PresentHook(IDXGISwapChain* chain, UINT interval, UINT flags) 
     if (chain == g_chain && g_ready) {
         if (!g_target && !CreateTarget(chain)) return g_present(chain, interval, flags);
         const bool open = g_open.load(std::memory_order_relaxed);
-        if (open || GetTickCount64() < hooks::SpeedIndicatorUntil()) {
+        const bool show_indicator = tas::GetSettings().show_speed_indicator;
+        if (open || show_indicator) {
             ImGui_ImplDX11_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGuiIO& io = ImGui::GetIO();
@@ -333,7 +366,7 @@ HRESULT __stdcall PresentHook(IDXGISwapChain* chain, UINT interval, UINT flags) 
             g_ui_scale = open ? viewport_scale : 1.f;
             ImGui::GetStyle() = g_base_style;
             ImGui::GetStyle().ScaleAllSizes(g_ui_scale);
-            io.FontGlobalScale = 1.4f * g_ui_scale;
+            io.FontGlobalScale = (open ? 1.75f * g_ui_scale : 1.1f);
             if (open) FeedMouse();
             if (GetForegroundWindow() == g_window && open) io.MouseDrawCursor = true;
             else io.MouseDrawCursor = false;

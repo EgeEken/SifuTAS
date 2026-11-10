@@ -13,8 +13,8 @@
 namespace sifucoop::tas {
 namespace {
 
-constexpr int kSlotCount = 9;
-constexpr int kPresetCount = 6;
+constexpr int kSlotCount = layout::kSlotCount;
+constexpr int kPresetCount = layout::kPresetCount;
 constexpr unsigned int kModifierMask = ModifierCtrl | ModifierAlt | ModifierShift;
 SRWLOCK g_settings_lock = SRWLOCK_INIT;
 Settings g_settings = {};
@@ -26,11 +26,7 @@ bool g_gui_previous = false;
 std::atomic<bool> g_settings_saved{true};
 bool g_save_error_logged = false;
 
-int DefaultKey(int slot) {
-    return slot >= 0 && slot < 6 ? '1' + slot : 0;
-}
-
-Binding DefaultBinding(int slot) { return {DefaultKey(slot), ModifierNone}; }
+Binding DefaultBinding(int slot) { return {layout::DefaultKey(slot), ModifierNone}; }
 
 bool ValidKey(int key) {
     if (key == 0) return true;
@@ -141,7 +137,7 @@ bool SaveLocked() {
     if (!ConfigPath(path, sizeof(path))) return g_settings_saved.exchange(false);
     bool saved = true;
     char key[32] = {}, value[48] = {};
-    WriteValue("version", "1", path, &saved);
+    WriteValue("version", "2", path, &saved);
     for (int i = 0; i < kSlotCount; ++i) {
         _snprintf_s(key, sizeof(key), _TRUNCATE, "slot_%d", i + 1);
         _snprintf_s(value, sizeof(value), _TRUNCATE, "%d,%u", g_settings.bindings[i].key,
@@ -191,7 +187,7 @@ void LoadSettings() {
     char path[MAX_PATH] = {};
     if (ConfigPath(path, sizeof(path))) {
         const int version = GetPrivateProfileIntA("time_control", "version", 0, path);
-        if (version == 1) {
+        if (version == layout::kConfigVersion) {
             Settings loaded = g_settings;
             char key[32] = {}, value[64] = {};
             bool duplicate = false;
@@ -225,7 +221,7 @@ void LoadSettings() {
             if (indicator == 0 || indicator == 1) g_settings.show_speed_indicator = indicator != 0;
             if (duplicate) SC_LOG("time-control: invalid or duplicate binding; safe defaults retained for affected slots");
         } else {
-            SC_LOG("time-control: applying version 1 defaults; legacy TAS bindings preserved");
+            SC_LOG("time-control: applying version 2 defaults; legacy settings preserved");
         }
     }
     g_input_names_dirty.store(true, std::memory_order_relaxed);
@@ -325,9 +321,7 @@ SlotKind GetSlotKind(int slot) {
 }
 
 int PresetIndexForSlot(int slot) {
-    if (slot >= 1 && slot <= 3) return slot - 1;
-    if (slot >= 6 && slot <= 8) return slot - 3;
-    return -1;
+    return layout::PresetForSlot(slot);
 }
 
 float SpeedForPreset(int preset) {

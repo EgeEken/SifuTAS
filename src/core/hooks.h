@@ -16,9 +16,9 @@ void AdvanceFrames(int count);
 void ToggleGui();
 void SetPaused(bool paused);
 void SetPlaybackSpeed(float speed);
+void ActivateSpeedPreset(int preset);
 float PlaybackSpeed();
 bool IsPaused();
 bool IsGameplaySupported();
-ULONGLONG SpeedIndicatorUntil();
 
 }

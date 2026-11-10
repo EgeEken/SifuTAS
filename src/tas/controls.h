@@ -1,5 +1,7 @@
 #pragma once
 
+#include "control_layout.h"
+
 namespace sifucoop::tas {
 
 enum class SlotKind : int { Pause, Speed, FrameOne, FrameMany };
@@ -17,8 +19,10 @@ struct Binding {
 };
 
 struct Settings {
-    Binding bindings[9] = {};
-    int preset_steps[6] = {8, 5, 2, 10, 10, 10};
+    Binding bindings[layout::kSlotCount] = {
+        {'1', ModifierNone}, {'2', ModifierNone}, {'4', ModifierNone}, {'5', ModifierNone},
+        {'6', ModifierNone}, {'7', ModifierNone}, {0, ModifierNone}, {0, ModifierNone}};
+    int preset_steps[layout::kPresetCount] = {8, 5, 2, 10, 10};
     int frames_per_step = 5;
     bool show_speed_indicator = true;
 };
